@@ -33,9 +33,14 @@ export function ChatInput({
     if (!trimmed || disabled) return;
     onSend(trimmed);
     setValue("");
-    // Reset the auto-sized height back to its baseline.
-    if (textareaRef.current) {
-      textareaRef.current.style.height = "auto";
+    // Reset auto-sized height and re-focus so the user can keep typing
+    // without reaching for the mouse. Focus is a no-op when disabled
+    // (browsers refuse focus on disabled inputs), but we still try — when
+    // the stream finishes the textarea re-enables and is ready to go.
+    const ta = textareaRef.current;
+    if (ta) {
+      ta.style.height = "auto";
+      ta.focus();
     }
   }, [value, disabled, onSend]);
 

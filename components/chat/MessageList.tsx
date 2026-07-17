@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import type { ChatMessage } from "@/types/chat";
 import { MessageBubble } from "./MessageBubble";
@@ -10,32 +10,72 @@ interface MessageListProps {
 }
 
 /**
- * Scrollable message history. Auto-scrolls to the latest message when new
- * content arrives, but only if the user is already near the bottom — we don't
- * yank them back if they've intentionally scrolled up to re-read something.
+ * How close to the bottom the user has to be for us to treat them as
+ * "following" the conversation. Smaller = stricter (user must be near the
+ * bottom for auto-scroll). Bigger = more forgiving.
+ */
+const FOLLOW_THRESHOLD_PX = 150;
+
+/**
+ * Scrollable message history.
  *
- * We use `useEffect` (not `useLayoutEffect`) because we're inside a client
- * component that may SSR the initial frame, where `useLayoutEffect` would
- * warn. The post-paint scroll is fine for chat UX — the streaming delta is
- * already incremental, so users don't perceive a "jump".
+ * Auto-scrolls to the latest content while the user is "following" (i.e.
+ * they're near the bottom of the list). If they scroll up to re-read
+ * something, we stop yanking them back. As soon as they scroll down within
+ * `FOLLOW_THRESHOLD_PX` of the bottom, auto-scroll resumes.
+ *
+ * Implementation notes:
+ *   - We use INSTANT scroll (`scrollTop = scrollHeight`), not smooth
+ *     `scrollIntoView`. Smooth scroll queues and lags during fast streaming.
+ *   - We track `isFollowing` via a real scroll listener, not by re-measuring
+ *     on every render. That way a chunk arriving between user-scroll events
+ *     doesn't suddenly decide "they're not following" based on stale state.
+ *   - The hook starts with `isFollowing = true` so the initial render of a
+ *     long stored transcript snaps to the latest message.
  */
 export function MessageList({ messages }: MessageListProps) {
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
+  const [isFollowing, setIsFollowing] = useState(true);
 
+  // Track follow-state on scroll. Listener is passive so it doesn't fight
+  // the scroll thread.
   useEffect(() => {
     const viewport = viewportRef.current;
     if (!viewport) return;
 
-    // Distance from the bottom in pixels. If small, treat the user as
-    // "following" the conversation and snap to the bottom.
-    const distanceFromBottom =
-      viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight;
+    const onScroll = () => {
+      const dist =
+        viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight;
+      setIsFollowing(dist < FOLLOW_THRESHOLD_PX);
+    };
 
-    if (distanceFromBottom < 120) {
-      bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
-    }
-  }, [messages]);
+    viewport.addEventListener("scroll", onScroll, { passive: true });
+    // Run once on mount so the initial state is accurate (covers the case
+    // where the browser restored a non-zero scrollTop on reload).
+    onScroll();
+    return () => viewport.removeEventListener("scroll", onScroll);
+  }, []);
+
+  // Whenever messages change, snap to bottom if the user is following.
+  useEffect(() => {
+    const viewport = viewportRef.current;
+    if (!viewport || !isFollowing) return;
+    viewport.scrollTop = viewport.scrollHeight;
+  }, [messages, isFollowing]);
+
+  // Belt-and-suspenders: after the browser lays out the new content (e.g.
+  // during a fast streaming burst), run a second scroll on the next frame
+  // so the final height is honored.
+  useEffect(() => {
+    if (!isFollowing) return;
+    const id = requestAnimationFrame(() => {
+      const viewport = viewportRef.current;
+      if (!viewport) return;
+      viewport.scrollTop = viewport.scrollHeight;
+    });
+    return () => cancelAnimationFrame(id);
+  }, [messages, isFollowing]);
 
   return (
     <div

@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { PlusIcon, SparklesIcon } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { fixInlineMarkdown } from "@/lib/markdown-fix";
 import { clearMessages, loadMessages, saveMessages } from "@/lib/storage";
 import type { ChatMessage, WireMessage } from "@/types/chat";
 
@@ -39,7 +40,13 @@ export function ChatShell() {
   // server snapshot into the client state forever.
   useEffect(() => {
     /* eslint-disable react-hooks/set-state-in-effect -- see comment above */
-    setMessages(loadMessages());
+    // Apply the markdown cleanup pass to any messages loaded from storage so
+    // older conversations (which may have been generated before the fix
+    // existed) also render with proper paragraph breaks.
+    const stored = loadMessages().map((m) =>
+      m.role === "assistant" ? { ...m, content: fixInlineMarkdown(m.content) } : m
+    );
+    setMessages(stored);
     setHydrated(true);
     /* eslint-enable react-hooks/set-state-in-effect */
   }, []);
@@ -171,10 +178,20 @@ export function ChatShell() {
         );
         setStreamError(message);
       } finally {
+        // One-shot cleanup: if the model emitted wall-of-text (no \n\n between
+        // list items / sections), the per-delta boundary fix couldn't catch
+        // patterns that span chunk boundaries. Apply the global regex pass on
+        // the finished message so the rendered bubble has proper paragraph
+        // breaks. Only mutates the message we just streamed; older messages
+        // are untouched.
         setMessages((prev) =>
-          prev.map((m) =>
-            m.id === assistantId ? { ...m, streaming: false } : m
-          )
+          prev.map((m) => {
+            if (m.id !== assistantId) return m;
+            const cleaned = fixInlineMarkdown(m.content);
+            return cleaned === m.content
+              ? { ...m, streaming: false }
+              : { ...m, content: cleaned, streaming: false };
+          })
         );
         setIsStreaming(false);
         abortRef.current = null;

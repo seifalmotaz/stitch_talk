@@ -10,6 +10,7 @@
  */
 
 import { streamChat } from "@/lib/openrouter";
+import { fixStreamingMarkdownBoundary } from "@/lib/markdown-fix";
 import { CHAT_SYSTEM_PROMPT } from "@/lib/prompts";
 import type { WireMessage } from "@/types/chat";
 
@@ -64,8 +65,13 @@ export async function POST(request: Request): Promise<Response> {
     stream = new ReadableStream<Uint8Array>({
       async start(controller) {
         const encoder = new TextEncoder();
+        // Accumulated text so the boundary-fix helper can decide whether to
+        // prepend a paragraph break to each incoming delta.
+        let accumulated = "";
         try {
-          for await (const delta of streamChat(messages, CHAT_SYSTEM_PROMPT)) {
+          for await (const rawDelta of streamChat(messages, CHAT_SYSTEM_PROMPT)) {
+            const delta = fixStreamingMarkdownBoundary(accumulated, rawDelta);
+            accumulated += delta;
             controller.enqueue(encoder.encode(sseEncode(delta)));
           }
           controller.enqueue(encoder.encode(sseEncode("[DONE]")));
