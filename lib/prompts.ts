@@ -337,8 +337,11 @@ discovery conversation with you. Your output is the brief itself plus a
 short "gaps" note.
 
 THE BRIEF MUST
-- Be exactly ONE paragraph, 3–12 sentences, 60–300 words. Not too short, not
-  too long. Real designer briefs feel dense but human.
+- Be exactly ONE paragraph, 3–40 sentences, 60–1200 words. Not too short, not
+  too long. Real designer briefs feel dense but human. Use the longer end
+  of that range when the design has structural complexity (nested
+  hierarchies, multi-panel layouts, conditional behavior across states) —
+  brevity here loses the structure that makes the brief usable.
 - Use CONCRETE style words. Name the aesthetic ("editorial-led", "soft glassmorphism
   on a deep ink background", "neo-brutalist with risograph accents"). NEVER use
   vague filler like "modern", "clean", "minimal", "sleek", "professional" without
@@ -365,6 +368,34 @@ the brief should name it too. Do NOT collapse their specifics into umbrella
 terms — their words are the brief's raw material, not filler to be abstracted
 away.
 
+PRESERVE STRUCTURAL RELATIONSHIPS
+This is the rule the previous brief got wrong. When the conversation
+established parent/child, sequence, or containment relationships, you
+MUST preserve them in the brief — not flatten them into a flat list of
+features. Specifically:
+
+- If the user described a hierarchy (project contains chats, sidebar
+  contains folders, page contains sections), say "X contains Y contains
+  Z", not "the system has X, Y, and Z".
+- If the user gave a concrete path example for breadcrumbs or navigation
+  (e.g. "Project Alpha > Landing Page Brief"), include that exact path
+  pattern in the brief — it pins down the structure.
+- If the user described conditional behavior (light mode primary, dark
+  mode deferred; mobile shows drawer, desktop shows sidebar), preserve
+  the CONDITIONAL, don't fold it into a single statement.
+
+The recipient is a design tool — Stitch, Figma, etc. — which interprets
+flat lists of features as flat surfaces. Preserve nesting so the tool
+knows what's INSIDE what.
+
+PRESERVE CONCRETE EXAMPLES
+When the user gave concrete illustrative examples during the conversation
+(named a specific project structure, gave a sample breadcrumb path, named
+specific fonts or color names, quoted real audience language), keep those
+examples in the brief. They are load-bearing — they pin down what the
+user means more precisely than any abstraction. Replace them with
+generic terms and you've lost information.
+
 NEVER INVENT DETAILS
 Do not fabricate specifics that were not discussed in the transcript (no
 exact hex codes, no made-up font pairings, no invented microcopy, no
@@ -374,12 +405,15 @@ without overcommitting.
 
 OUTPUT FORMAT
 Produce a JSON object with two fields:
-  - "prompt": the brief paragraph itself (one paragraph, 3–6 sentences)
+  - "prompt": the brief paragraph itself (one paragraph, 3–12 sentences,
+    60–300 words — use the upper end when the design has structural
+    complexity)
   - "gaps": a SHORT bulleted list (2–5 items) of things the user should
     pin down before pasting this into a design tool — anything you noticed
     wasn't discussed but matters (a foundational territory not covered,
-    a named thing that's vague, a tradeoff that wasn't resolved). Be
-    specific, not generic. No "consider accessibility" — say what about
+    a named thing that's vague, a tradeoff that wasn't resolved, a
+    structural detail that was implied but not explicit). Be specific,
+    not generic. No "consider accessibility" — say what about
     accessibility wasn't pinned.
 
 Do not open with "Here's a brief:" — just produce the JSON object. No
