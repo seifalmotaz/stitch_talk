@@ -26,16 +26,22 @@ interface BriefDialogProps {
   messages: WireMessage[];
 }
 
+interface BriefPayload {
+  prompt: string;
+  gaps: string[];
+}
+
 type Status =
   | { kind: "loading" }
-  | { kind: "ready"; prompt: string }
+  | { kind: "ready"; prompt: string; gaps: string[] }
   | { kind: "error"; message: string };
 
 /**
- * Modal that shows the generated design brief. Handles its own loading /
- * error / ready states. The brief is a single paragraph meant to be copied
- * and pasted elsewhere — the dialog emphasizes copyability (monospace, a
- * dedicated copy button) over visual flourishes.
+ * Modal that shows the generated design brief plus a short list of "gaps"
+ * — things the user should pin down before pasting into a design tool.
+ * Handles its own loading / error / ready states. The brief is a single
+ * paragraph meant to be copied and pasted elsewhere — the dialog emphasizes
+ * copyability (monospace, a dedicated copy button) over visual flourishes.
  */
 export function BriefDialog({
   open,
@@ -70,12 +76,16 @@ export function BriefDialog({
           const errText = await res.text().catch(() => "");
           throw new Error(errText || `Brief request failed (${res.status})`);
         }
-        return (await res.json()) as { prompt?: string };
+        return (await res.json()) as Partial<BriefPayload>;
       })
       .then((data) => {
         if (cancelled) return;
         if (!data.prompt) throw new Error("Empty brief returned from server.");
-        setStatus({ kind: "ready", prompt: data.prompt });
+        setStatus({
+          kind: "ready",
+          prompt: data.prompt,
+          gaps: Array.isArray(data.gaps) ? data.gaps : [],
+        });
       })
       .catch((err) => {
         if (cancelled) return;
@@ -143,13 +153,27 @@ export function BriefDialog({
           )}
 
           {status.kind === "ready" && (
-            <Textarea
-              data-slot="brief-textarea"
-              value={status.prompt}
-              readOnly
-              className="min-h-32 font-mono text-xs leading-relaxed"
-              onFocus={(e) => e.currentTarget.select()}
-            />
+            <div className="space-y-3">
+              <Textarea
+                data-slot="brief-textarea"
+                value={status.prompt}
+                readOnly
+                className="min-h-28 font-mono text-xs leading-relaxed"
+                onFocus={(e) => e.currentTarget.select()}
+              />
+              {status.gaps.length > 0 && (
+                <div className="rounded-lg border border-border bg-muted/40 px-3 py-2">
+                  <p className="text-xs font-medium text-foreground mb-1.5">
+                    Worth pinning down before you paste this:
+                  </p>
+                  <ul className="text-xs text-muted-foreground space-y-1 list-disc pl-4">
+                    {status.gaps.map((gap, i) => (
+                      <li key={i}>{gap}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </div>
           )}
         </div>
 

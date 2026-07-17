@@ -2,11 +2,14 @@
  * POST /api/brief — generate the final design brief from a transcript.
  *
  * Accepts: { messages: { role, content }[] }
- * Returns: { prompt: string } — a single paragraph ready to paste into Stitch.
+ * Returns: { prompt: string, gaps: string[] } — the brief paragraph plus
+ *          a short list of things the user should pin down before pasting
+ *          into a design tool.
  *
  * Non-streaming because the output is short and a single discrete deliverable
- * — a loading spinner is enough UX. If we later want streaming here too, just
- * swap to the same SSE pattern as /api/chat.
+ * — a loading spinner is enough UX. The model is asked for JSON via the
+ * `responseFormat` parameter so the brief + gaps come back as a typed object
+ * rather than us regexing a free-form reply.
  */
 
 import { generateCompletion } from "@/lib/openrouter";
@@ -30,6 +33,45 @@ function isWireMessage(value: unknown): value is WireMessage {
   );
 }
 
+interface BriefPayload {
+  prompt: string;
+  gaps: string[];
+}
+
+/**
+ * Best-effort parse of the model's JSON reply. The SDK guarantees valid JSON
+ * when `responseFormat: json_object` is set, but models occasionally wrap
+ * the JSON in ``` fences — strip those before parsing.
+ */
+function parseBriefPayload(raw: string): BriefPayload | null {
+  if (!raw) return null;
+  const cleaned = raw
+    .trim()
+    .replace(/^```(?:json)?\s*/i, "")
+    .replace(/```\s*$/i, "")
+    .trim();
+  try {
+    const parsed = JSON.parse(cleaned) as unknown;
+    if (
+      parsed &&
+      typeof parsed === "object" &&
+      typeof (parsed as { prompt?: unknown }).prompt === "string"
+    ) {
+      const gapsRaw = (parsed as { gaps?: unknown }).gaps;
+      const gaps = Array.isArray(gapsRaw)
+        ? gapsRaw.filter((g): g is string => typeof g === "string")
+        : [];
+      return {
+        prompt: (parsed as { prompt: string }).prompt.trim(),
+        gaps,
+      };
+    }
+  } catch {
+    // fall through
+  }
+  return null;
+}
+
 export async function POST(request: Request): Promise<Response> {
   let body: BriefRequestBody;
   try {
@@ -47,8 +89,17 @@ export async function POST(request: Request): Promise<Response> {
   }
 
   try {
-    const prompt = await generateCompletion(messages, BRIEF_SYSTEM_PROMPT);
-    return Response.json({ prompt: prompt.trim() });
+    const raw = await generateCompletion(messages, BRIEF_SYSTEM_PROMPT, {
+      responseFormat: { type: "json_object" },
+    });
+    const parsed = parseBriefPayload(raw);
+    if (!parsed) {
+      // Fallback: treat the whole response as the prompt, no gaps. This
+      // keeps the UX usable even if the model refuses to emit JSON for
+      // some reason.
+      return Response.json({ prompt: raw.trim(), gaps: [] });
+    }
+    return Response.json(parsed);
   } catch (err) {
     const message =
       err instanceof Error ? err.message : "Failed to generate brief";

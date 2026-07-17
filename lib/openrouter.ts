@@ -91,16 +91,19 @@ export async function* streamChat(
 }
 
 /**
- * Non-streaming single completion — used for the "Generate Brief" endpoint,
- * which produces one short paragraph and doesn't benefit from token-by-token
- * display.
+ * Non-streaming single completion — used for the "Generate Brief" endpoint.
  *
- * `stream: false` causes `send()` to return a `ChatResult` instead of an
- * EventStream.
+ * Two modes:
+ *   - Default (no responseFormat): returns the raw string content. Used for
+ *     simple completions where we just want the model's text back.
+ *   - With `responseFormat: { type: "json_object" }`: instructs the model to
+ *     emit valid JSON, then parses the response into a typed object. Used
+ *     by the brief endpoint to extract `prompt` + `gaps` cleanly.
  */
 export async function generateCompletion(
   messages: WireMessage[],
-  systemPrompt: string
+  systemPrompt: string,
+  options: { responseFormat?: { type: "json_object" } } = {}
 ): Promise<string> {
   const client = getClient();
   const model = getModel();
@@ -110,6 +113,9 @@ export async function generateCompletion(
       model,
       stream: false,
       messages: toChatMessages(messages, systemPrompt),
+      ...(options.responseFormat
+        ? { responseFormat: options.responseFormat }
+        : {}),
     },
   });
 
