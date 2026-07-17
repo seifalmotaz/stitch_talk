@@ -343,7 +343,11 @@ async function consumeSseStream(
         if (line.startsWith("event:")) {
           currentEvent = line.slice(6).trim();
         } else if (line.startsWith("data:")) {
-          dataLines.push(line.slice(5).trimStart());
+          // The server emits `data:<payload>` with no space after the colon,
+          // so `slice(5)` returns the payload exactly. We must NOT trim — BPE
+          // tokens can carry meaningful leading spaces (e.g. " sounds") that
+          // would otherwise collapse adjacent tokens.
+          dataLines.push(line.slice(5));
         }
       }
       const data = dataLines.join("\n");
@@ -365,9 +369,9 @@ async function consumeSseStream(
   }
 
   // Flush any trailing buffered content (some servers omit the final \n\n).
-  if (buffer.trim()) {
-    if (buffer.trim() !== "[DONE]") {
-      handlers.onDelta(buffer.trim());
-    }
+  // Strip ONLY trailing newlines — leading whitespace is meaningful payload.
+  const trailing = buffer.replace(/\n+$/, "");
+  if (trailing.length > 0 && trailing !== "[DONE]") {
+    handlers.onDelta(trailing);
   }
 }

@@ -32,8 +32,12 @@ function isWireMessage(value: unknown): value is WireMessage {
 }
 
 function sseEncode(payload: string): string {
-  // Each SSE message line; the trailing blank line is required by the spec.
-  return `data: ${payload}\n\n`;
+  // SSE spec allows either `data: <value>` or `data:<value>` — the space is
+  // considered part of the value. We omit it so the payload round-trips
+  // byte-for-byte; otherwise every chunk would carry a phantom leading space
+  // that breaks token concatenation downstream (e.g. BPE tokens like
+  // " sounds" become "  sounds" after framing).
+  return `data:${payload}\n\n`;
 }
 
 export async function POST(request: Request): Promise<Response> {
