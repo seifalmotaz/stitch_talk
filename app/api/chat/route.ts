@@ -1,7 +1,11 @@
 /**
  * POST /api/chat — streaming chat completion.
  *
- * Accepts: { messages: { role, content }[] }
+ * Accepts: { messages: { role, content, images? }[] }
+ *   - `content` is the text part of the message.
+ *   - `images` is optional. If present, the message becomes multimodal:
+ *     `content` stays as the text part, and each image is sent as a
+ *     `image_url` part with a base64 data URL.
  * Streams: text/event-stream with `data: <delta>` chunks, terminated by
  *          `data: [DONE]` on success or `event: error\ndata: <msg>` on failure.
  *
@@ -12,7 +16,7 @@
 import { streamChat } from "@/lib/openrouter";
 import { fixStreamingMarkdownBoundary } from "@/lib/markdown-fix";
 import { CHAT_SYSTEM_PROMPT } from "@/lib/prompts";
-import type { WireMessage } from "@/types/chat";
+import type { ChatImage, WireMessage } from "@/types/chat";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -21,15 +25,35 @@ interface ChatRequestBody {
   messages?: WireMessage[];
 }
 
+// Per-message image limits. The client also enforces these before sending
+// (max 4 images, max 5MB each after resize) — server validation is
+// defense in depth.
+const MAX_IMAGES_PER_MESSAGE = 4;
+const ALLOWED_IMAGE_MIME_PREFIXES = ["image/jpeg", "image/png", "image/webp", "image/gif"];
+const DATA_URL_RE = /^data:([^;]+);base64,/;
+
+function isValidImage(img: unknown): img is ChatImage {
+  if (!img || typeof img !== "object") return false;
+  const i = img as ChatImage;
+  if (typeof i.dataUrl !== "string" || !i.dataUrl.startsWith("data:")) return false;
+  const m = i.dataUrl.match(DATA_URL_RE);
+  if (!m) return false;
+  if (!ALLOWED_IMAGE_MIME_PREFIXES.includes(m[1])) return false;
+  if (typeof i.size !== "number" || i.size <= 0 || i.size > 8 * 1024 * 1024) return false;
+  return true;
+}
+
 function isWireMessage(value: unknown): value is WireMessage {
-  return (
-    !!value &&
-    typeof value === "object" &&
-    (value as WireMessage).role !== undefined &&
-    typeof (value as WireMessage).content === "string" &&
-    ((value as WireMessage).role === "user" ||
-      (value as WireMessage).role === "assistant")
-  );
+  if (!value || typeof value !== "object") return false;
+  const m = value as WireMessage;
+  if (m.role !== "user" && m.role !== "assistant") return false;
+  if (typeof m.content !== "string") return false;
+  if (m.images !== undefined) {
+    if (!Array.isArray(m.images)) return false;
+    if (m.images.length > MAX_IMAGES_PER_MESSAGE) return false;
+    if (!m.images.every(isValidImage)) return false;
+  }
+  return true;
 }
 
 function sseEncode(payload: string): string {
@@ -53,9 +77,15 @@ export async function POST(request: Request): Promise<Response> {
   }
 
   const messages = body.messages;
-  if (!Array.isArray(messages) || messages.length === 0 || !messages.every(isWireMessage)) {
+  if (
+    !Array.isArray(messages) ||
+    messages.length === 0 ||
+    !messages.every(isWireMessage)
+  ) {
     return new Response(
-      JSON.stringify({ error: "Body must include a non-empty `messages` array of {role,content}." }),
+      JSON.stringify({
+        error: `Body must include a non-empty messages array. Each message needs role (user|assistant), content (string), and optional images (array of {dataUrl, size, mimeType}, max ${MAX_IMAGES_PER_MESSAGE}, each ≤ 8MB, data URL with image/{jpeg,png,webp,gif}).`,
+      }),
       { status: 400, headers: { "content-type": "application/json" } }
     );
   }

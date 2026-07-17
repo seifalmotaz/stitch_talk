@@ -89,7 +89,15 @@ export async function POST(request: Request): Promise<Response> {
   }
 
   try {
-    const raw = await generateCompletion(messages, BRIEF_SYSTEM_PROMPT, {
+    // The brief summarizes text — strip images from messages so the payload
+    // stays small. The model already saw the images when it generated the
+    // assistant turns, so no information is lost.
+    const messagesForBrief: WireMessage[] = messages.map((m) => ({
+      role: m.role,
+      content: m.content,
+    }));
+
+    const raw = await generateCompletion(messagesForBrief, BRIEF_SYSTEM_PROMPT, {
       responseFormat: { type: "json_object" },
     });
     const parsed = parseBriefPayload(raw);

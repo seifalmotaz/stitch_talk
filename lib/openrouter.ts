@@ -11,6 +11,11 @@
  * We expose exactly two operations: `streamChat` for the running assistant
  * reply and `generateCompletion` for the brief-generation call. Anything
  * more elaborate belongs at the call site.
+ *
+ * Multimodal: user messages with attached images are transformed into
+ * OpenRouter's content-array shape (text part + image_url parts). The
+ * model consumes images as input — it never produces them — so only user
+ * messages need the array form. Assistant messages stay as plain strings.
  */
 
 import { OpenRouter } from "@openrouter/sdk";
@@ -44,17 +49,52 @@ function getModel(): string {
   return model;
 }
 
+/**
+ * Build the messages array we send to OpenRouter.
+ *
+ * - System message is always plain text.
+ * - User messages with no images stay as plain text (cheaper for models
+ *   and matches the well-trodden code path).
+ * - User messages WITH images become a content array: a text part followed
+ *   by one image_url part per image. The order is text-then-images so the
+ *   model's attention sees the user's question/observation first.
+ * - Assistant messages are always plain text.
+ *
+ * Note: the SDK's TypeScript types use camelCase `imageUrl` (the SDK
+ * serializes to `image_url` on the wire). We use camelCase here to satisfy
+ * the type checker; OpenRouter accepts both forms.
+ *
+ * The SDK narrows the messages array to a discriminated union by role. We
+ * build with a relaxed local type and cast at the boundary — the runtime
+ * shape is exactly what OpenRouter expects.
+ */
 function toChatMessages(
   messages: WireMessage[],
   systemPrompt: string
-): Array<{ role: "system" | "user" | "assistant"; content: string }> {
-  return [
+): Array<{ role: string; content: unknown }> {
+  const out: Array<{ role: string; content: unknown }> = [
     { role: "system", content: systemPrompt },
-    ...messages.map((m) => ({
-      role: m.role as "user" | "assistant",
-      content: m.content,
-    })),
   ];
+  for (const m of messages) {
+    if (m.role === "user" && m.images && m.images.length > 0) {
+      out.push({
+        role: "user",
+        content: [
+          { type: "text", text: m.content },
+          ...m.images.map((img) => ({
+            type: "image_url",
+            imageUrl: { url: img.dataUrl },
+          })),
+        ],
+      });
+    } else {
+      out.push({
+        role: m.role,
+        content: m.content,
+      });
+    }
+  }
+  return out;
 }
 
 /**
@@ -76,7 +116,15 @@ export async function* streamChat(
     chatRequest: {
       model,
       stream: true,
-      messages: toChatMessages(messages, systemPrompt),
+      // The SDK's ChatMessages type is a discriminated union by role that
+      // doesn't capture our richer multimodal shape at the type level. The
+      // runtime payload is exactly what OpenRouter expects (string content
+      // for text, array of {type,text|imageUrl} parts for multimodal).
+      messages: toChatMessages(messages, systemPrompt) as never,
+      // Enable high reasoning effort for reasoning models (e.g. Gemma 4 31B)
+      reasoning: {
+        effort: "high",
+      },
     },
   });
 
@@ -112,11 +160,16 @@ export async function generateCompletion(
     chatRequest: {
       model,
       stream: false,
-      messages: toChatMessages(messages, systemPrompt),
+      // See note in streamChat above about why we cast to `never`.
+      messages: toChatMessages(messages, systemPrompt) as never,
       ...(options.responseFormat
         ? { responseFormat: options.responseFormat }
         : {}),
-    },
+      // Enable high reasoning effort for reasoning models (e.g. Gemma 4 31B)
+      reasoning: {
+        effort: "high",
+      },
+    } as any,
   });
 
   // Non-streaming shape: ChatResult { choices: [{ message: { content } }] }

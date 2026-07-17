@@ -6,7 +6,7 @@ import { PlusIcon, SparklesIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { fixInlineMarkdown } from "@/lib/markdown-fix";
 import { clearMessages, loadMessages, saveMessages } from "@/lib/storage";
-import type { ChatMessage, WireMessage } from "@/types/chat";
+import type { ChatImage, ChatMessage, WireMessage } from "@/types/chat";
 
 import { BriefDialog } from "./BriefDialog";
 import { ChatInput } from "./ChatInput";
@@ -80,9 +80,12 @@ export function ChatShell() {
   }, [isStreaming]);
 
   const handleSend = useCallback(
-    async (text: string) => {
+    async (text: string, images: ChatImage[]) => {
       const trimmed = text.trim();
-      if (!trimmed || isStreaming) return;
+      // Allow sending when there's text OR images (e.g. user attaches a
+      // screenshot without typing anything — "what do you think?" is
+      // implied by the visual itself).
+      if ((!trimmed && images.length === 0) || isStreaming) return;
 
       setStreamError(null);
 
@@ -90,6 +93,9 @@ export function ChatShell() {
         id: crypto.randomUUID(),
         role: "user",
         content: trimmed,
+        // Persist copies of the images — the input clears its state as
+        // soon as we hand them off, so we can't keep references there.
+        images: images.length > 0 ? images.slice() : undefined,
         createdAt: Date.now(),
       };
 
@@ -113,6 +119,7 @@ export function ChatShell() {
         const wireMessages: WireMessage[] = [...messages, userMsg].map((m) => ({
           role: m.role,
           content: m.content,
+          ...(m.images && m.images.length > 0 ? { images: m.images } : {}),
         }));
 
         const res = await fetch("/api/chat", {
@@ -202,7 +209,7 @@ export function ChatShell() {
 
   const handlePickStarter = useCallback(
     (text: string) => {
-      void handleSend(text);
+      void handleSend(text, []);
     },
     [handleSend]
   );
