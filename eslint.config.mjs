@@ -12,6 +12,9 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // macOS resource-fork metadata files that ship alongside regular files
+    // when the directory is on a non-APFS volume. Harmless but unparseable.
+    "**/._*",
   ]),
 ]);
 
