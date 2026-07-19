@@ -1,9 +1,9 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { PlusIcon, SparklesIcon } from "lucide-react";
+import Link from "next/link";
+import { ArrowLeftIcon, PlusIcon } from "lucide-react";
 
-import { Button } from "@/components/ui/button";
 import { fixInlineMarkdown } from "@/lib/markdown-fix";
 import { clearMessages, loadMessages, saveMessages } from "@/lib/storage";
 import type { ChatImage, ChatMessage, WireMessage } from "@/types/chat";
@@ -12,6 +12,15 @@ import { BriefDialog } from "./BriefDialog";
 import { ChatInput } from "./ChatInput";
 import { EmptyState } from "./EmptyState";
 import { MessageList } from "./MessageList";
+
+export type ChatShellProps = {
+  /** Project this thread belongs to (for chrome / back link). */
+  projectId?: string;
+  projectName?: string;
+  chatTitle?: string;
+  /** Where the back control returns — typically the project hub. */
+  backHref?: string;
+};
 
 /**
  * The whole chat experience. Owns:
@@ -22,27 +31,22 @@ import { MessageList } from "./MessageList";
  *
  * Everything else is a presentational child.
  */
-export function ChatShell() {
+export function ChatShell({
+  projectId,
+  projectName,
+  chatTitle,
+  backHref,
+}: ChatShellProps = {}) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [hydrated, setHydrated] = useState(false);
   const [isStreaming, setIsStreaming] = useState(false);
   const [streamError, setStreamError] = useState<string | null>(null);
   const [briefOpen, setBriefOpen] = useState(false);
 
-  // Hold the in-flight controller so we could abort on unmount (not used
-  // for v0.1 but kept for future "stop generating" button).
   const abortRef = useRef<AbortController | null>(null);
 
-  // Hydrate from localStorage exactly once on mount. This is the documented
-  // "hydrate after render" pattern for client-only persistence — we can't
-  // initialize from localStorage in useState because window/localStorage
-  // don't exist during SSR, and a lazy initializer would freeze the empty
-  // server snapshot into the client state forever.
   useEffect(() => {
-    /* eslint-disable react-hooks/set-state-in-effect -- see comment above */
-    // Apply the markdown cleanup pass to any messages loaded from storage so
-    // older conversations (which may have been generated before the fix
-    // existed) also render with proper paragraph breaks.
+    /* eslint-disable react-hooks/set-state-in-effect -- hydrate after SSR */
     const stored = loadMessages().map((m) =>
       m.role === "assistant" ? { ...m, content: fixInlineMarkdown(m.content) } : m
     );
@@ -51,19 +55,11 @@ export function ChatShell() {
     /* eslint-enable react-hooks/set-state-in-effect */
   }, []);
 
-  // Persist on every change after hydration. We intentionally don't gate on
-  // isStreaming — saving an in-progress stream is fine; on reload the UI
-  // just renders whatever was last written.
   useEffect(() => {
     if (!hydrated) return;
     saveMessages(messages);
   }, [messages, hydrated]);
 
-  /**
-   * Count of substantive user turns (used to gate the Generate Brief button).
-   * Empty starters from the empty state don't count toward "2 user messages"
-   * until the assistant has had a chance to respond, so we use this guard.
-   */
   const userTurnCount = useMemo(
     () => messages.filter((m) => m.role === "user").length,
     [messages]
@@ -82,9 +78,6 @@ export function ChatShell() {
   const handleSend = useCallback(
     async (text: string, images: ChatImage[]) => {
       const trimmed = text.trim();
-      // Allow sending when there's text OR images (e.g. user attaches a
-      // screenshot without typing anything — "what do you think?" is
-      // implied by the visual itself).
       if ((!trimmed && images.length === 0) || isStreaming) return;
 
       setStreamError(null);
@@ -93,13 +86,10 @@ export function ChatShell() {
         id: crypto.randomUUID(),
         role: "user",
         content: trimmed,
-        // Persist copies of the images — the input clears its state as
-        // soon as we hand them off, so we can't keep references there.
         images: images.length > 0 ? images.slice() : undefined,
         createdAt: Date.now(),
       };
 
-      // Placeholder assistant message that we'll append to as tokens stream in.
       const assistantId = crypto.randomUUID();
       const assistantMsg: ChatMessage = {
         id: assistantId,
@@ -147,7 +137,6 @@ export function ChatShell() {
             );
           },
           onErrorEvent: (message) => {
-            // Surface a final error message inside the assistant bubble.
             setMessages((prev) =>
               prev.map((m) =>
                 m.id === assistantId
@@ -185,12 +174,6 @@ export function ChatShell() {
         );
         setStreamError(message);
       } finally {
-        // One-shot cleanup: if the model emitted wall-of-text (no \n\n between
-        // list items / sections), the per-delta boundary fix couldn't catch
-        // patterns that span chunk boundaries. Apply the global regex pass on
-        // the finished message so the rendered bubble has proper paragraph
-        // breaks. Only mutates the message we just streamed; older messages
-        // are untouched.
         setMessages((prev) =>
           prev.map((m) => {
             if (m.id !== assistantId) return m;
@@ -214,9 +197,6 @@ export function ChatShell() {
     [handleSend]
   );
 
-  // Snapshot of the conversation passed to the brief dialog. We compute it
-  // here so the dialog opens on a fixed transcript even if the user keeps
-  // chatting while it's open.
   const briefMessages = useMemo<WireMessage[]>(
     () => messages.map((m) => ({ role: m.role, content: m.content })),
     [messages]
@@ -225,30 +205,31 @@ export function ChatShell() {
   const hasMessages = messages.length > 0;
 
   return (
-    <div className="flex h-dvh flex-col">
+    <div className="atelier">
       <Header
         canGenerateBrief={canGenerateBrief}
         onNewChat={handleNewChat}
         onGenerateBrief={() => setBriefOpen(true)}
         hasMessages={hasMessages}
+        projectName={projectName}
+        chatTitle={chatTitle}
+        backHref={backHref}
+        projectId={projectId}
       />
 
-      {streamError && (
-        <div
-          role="alert"
-          className="mx-auto mt-2 w-full max-w-2xl px-4 sm:px-6"
-        >
-          <div className="rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive">
+      <main className="atelier-main">
+        {streamError && (
+          <div role="alert" className="atelier-alert">
             {streamError}
           </div>
-        </div>
-      )}
+        )}
 
-      {hasMessages ? (
-        <MessageList messages={messages} />
-      ) : (
-        <EmptyState onPick={handlePickStarter} />
-      )}
+        {hasMessages ? (
+          <MessageList messages={messages} />
+        ) : (
+          <EmptyState onPick={handlePickStarter} />
+        )}
+      </main>
 
       <ChatInput onSend={handleSend} disabled={isStreaming} />
 
@@ -267,6 +248,10 @@ interface HeaderProps {
   onNewChat: () => void;
   onGenerateBrief: () => void;
   hasMessages: boolean;
+  projectId?: string;
+  projectName?: string;
+  chatTitle?: string;
+  backHref?: string;
 }
 
 function Header({
@@ -274,50 +259,74 @@ function Header({
   onNewChat,
   onGenerateBrief,
   hasMessages,
+  projectId,
+  projectName,
+  chatTitle,
+  backHref,
 }: HeaderProps) {
+  const inProject = Boolean(projectName && backHref);
+
   return (
-    <header className="sticky top-0 z-10 border-b border-border bg-background/80 backdrop-blur supports-[backdrop-filter]:bg-background/60">
-      <div className="mx-auto flex w-full max-w-2xl items-center justify-between gap-2 px-4 sm:px-6 py-3">
-        <div className="flex items-center gap-2 min-w-0">
-          <span className="grid size-7 place-items-center rounded-lg bg-foreground text-background shrink-0">
-            <SparklesIcon className="size-4" />
-          </span>
-          <div className="min-w-0">
-            <p className="text-sm font-medium leading-tight">Stitch Talk</p>
-            <p className="text-[11px] text-muted-foreground leading-tight truncate">
-              Figure out the look before anything gets generated.
-            </p>
+    <header className="atelier-header">
+      <div className="atelier-brand">
+        {inProject ? (
+          <>
+            <Link
+              href={backHref!}
+              className="atelier-back"
+              aria-label={`Back to ${projectName}`}
+            >
+              <ArrowLeftIcon />
+            </Link>
+            <div className="atelier-brand-text">
+              <p className="atelier-context">{projectName}</p>
+              <h1>{chatTitle ?? "Thread"}</h1>
+            </div>
+          </>
+        ) : (
+          <div className="atelier-brand-text">
+            <h1>Stitch Talk</h1>
+            <p>Design the feel before anything gets generated.</p>
           </div>
-        </div>
-        <div className="flex items-center gap-2 shrink-0">
-          {hasMessages && (
-            <Button
+        )}
+      </div>
+      <div className="atelier-actions">
+        {hasMessages && (
+          projectId ? (
+            <Link
+              href={`/projects/${projectId}/chats/new`}
+              className="btn btn-ghost"
+              aria-label="Start a new thread"
+            >
+              <PlusIcon />
+              <span className="btn-label-hide-sm">New thread</span>
+            </Link>
+          ) : (
+            <button
               type="button"
-              variant="outline"
-              size="sm"
+              className="btn btn-ghost"
               onClick={onNewChat}
               aria-label="Start a new chat"
             >
               <PlusIcon />
-              New chat
-            </Button>
-          )}
-          <Button
-            type="button"
-            variant="default"
-            size="sm"
-            onClick={onGenerateBrief}
-            disabled={!canGenerateBrief}
-            aria-label="Generate design brief"
-            title={
-              canGenerateBrief
-                ? "Generate the design brief from this conversation"
-                : "Have a few exchanges first"
-            }
-          >
-            Generate brief
-          </Button>
-        </div>
+              <span className="btn-label-hide-sm">New thread</span>
+            </button>
+          )
+        )}
+        <button
+          type="button"
+          className="btn btn-thread"
+          onClick={onGenerateBrief}
+          disabled={!canGenerateBrief}
+          aria-label="Generate design brief"
+          title={
+            canGenerateBrief
+              ? "Generate the design brief from this conversation"
+              : "Have a few exchanges first"
+          }
+        >
+          Generate brief
+        </button>
       </div>
     </header>
   );
@@ -325,15 +334,6 @@ function Header({
 
 /**
  * Parse a Server-Sent Events body and emit data payloads.
- *
- * Handles:
- *   - `data: <text>` lines (yields the text, skipping `[DONE]`)
- *   - `event: error` lines (paired with a `data:` line via onErrorEvent)
- *   - mid-stream cancellation (caller's AbortController cuts the fetch)
- *
- * The split logic is deliberately lenient: real-world SSE servers can break
- * events across chunks, include CRLF, or have stray whitespace, so we
- * accumulate into a buffer and process complete event blocks only.
  */
 async function consumeSseStream(
   body: ReadableStream<Uint8Array>,
@@ -352,8 +352,6 @@ async function consumeSseStream(
     if (done) break;
     buffer += decoder.decode(value, { stream: true });
 
-    // SSE events are separated by a blank line (\n\n). Process whatever
-    // complete blocks we have, leaving any partial block in the buffer.
     let boundary = buffer.indexOf("\n\n");
     while (boundary !== -1) {
       const rawEvent = buffer.slice(0, boundary);
@@ -363,14 +361,10 @@ async function consumeSseStream(
       currentEvent = null;
       const dataLines: string[] = [];
       for (const line of rawEvent.split("\n")) {
-        if (line.startsWith(":")) continue; // SSE comment
+        if (line.startsWith(":")) continue;
         if (line.startsWith("event:")) {
           currentEvent = line.slice(6).trim();
         } else if (line.startsWith("data:")) {
-          // The server emits `data:<payload>` with no space after the colon,
-          // so `slice(5)` returns the payload exactly. We must NOT trim — BPE
-          // tokens can carry meaningful leading spaces (e.g. " sounds") that
-          // would otherwise collapse adjacent tokens.
           dataLines.push(line.slice(5));
         }
       }
@@ -392,8 +386,6 @@ async function consumeSseStream(
     }
   }
 
-  // Flush any trailing buffered content (some servers omit the final \n\n).
-  // Strip ONLY trailing newlines — leading whitespace is meaningful payload.
   const trailing = buffer.replace(/\n+$/, "");
   if (trailing.length > 0 && trailing !== "[DONE]") {
     handlers.onDelta(trailing);

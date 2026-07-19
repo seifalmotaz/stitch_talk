@@ -1,21 +1,41 @@
 import type { Metadata } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
+import {
+  Bricolage_Grotesque,
+  Figtree,
+  JetBrains_Mono,
+  Source_Serif_4,
+} from "next/font/google";
 import "./globals.css";
 
-const geistSans = Geist({
-  variable: "--font-geist-sans",
+const display = Bricolage_Grotesque({
+  variable: "--font-display",
   subsets: ["latin"],
+  weight: ["400", "500", "600", "700"],
 });
 
-const geistMono = Geist_Mono({
-  variable: "--font-geist-mono",
+const ui = Figtree({
+  variable: "--font-ui",
   subsets: ["latin"],
+  weight: ["400", "500", "600", "700"],
+});
+
+const read = Source_Serif_4({
+  variable: "--font-read",
+  subsets: ["latin"],
+  weight: ["400", "500", "600", "700"],
+  style: ["normal", "italic"],
+});
+
+const mono = JetBrains_Mono({
+  variable: "--font-mono",
+  subsets: ["latin"],
+  weight: ["400", "500"],
 });
 
 export const metadata: Metadata = {
-  title: "Stitch Talk — discuss the design before you build it",
+  title: "Stitch Talk — design the feel before you build",
   description:
-    "A chat-first design partner that helps you figure out the look, feel, and direction of your UI before any generation tool takes over.",
+    "A chat-first design atelier that helps you figure out the look, feel, and direction of your UI before any generation tool takes over.",
 };
 
 export default function RootLayout({
@@ -26,11 +46,9 @@ export default function RootLayout({
   return (
     <html
       lang="en"
-      className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
+      className={`${display.variable} ${ui.variable} ${read.variable} ${mono.variable} h-full`}
     >
-      <body className="min-h-full flex flex-col bg-background text-foreground">
-        {children}
-      </body>
+      <body className="h-full">{children}</body>
     </html>
   );
 }

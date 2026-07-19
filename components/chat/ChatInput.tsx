@@ -9,8 +9,6 @@ import {
 } from "react";
 import { ImagePlusIcon, SendIcon, XIcon } from "lucide-react";
 
-import { Button } from "@/components/ui/button";
-import { Textarea } from "@/components/ui/textarea";
 import type { ChatImage } from "@/types/chat";
 
 interface ChatInputProps {
@@ -25,8 +23,7 @@ const ACCEPTED_TYPES = ["image/jpeg", "image/png", "image/webp", "image/gif"];
 
 /**
  * Read a File as a base64 data URL, then optionally downscale via <canvas>
- * so a 4 MB phone photo becomes a ~200 KB jpeg. Skips the resize for small
- * images and for formats the browser can't safely re-encode (animated GIF).
+ * so a 4 MB phone photo becomes a ~200 KB jpeg.
  */
 async function fileToChatImage(file: File): Promise<ChatImage> {
   const dataUrl = await readAsDataUrl(file);
@@ -52,15 +49,11 @@ async function maybeDownscale(
   dataUrl: string,
   mimeType: string
 ): Promise<string> {
-  // Only downscale raster types we can safely re-encode. Animated GIFs and
-  // SVG would lose animation / fidelity if we round-tripped through canvas.
   if (mimeType === "image/gif" || mimeType === "image/svg+xml") return dataUrl;
 
   const img = await loadImage(dataUrl);
   const longest = Math.max(img.naturalWidth, img.naturalHeight);
   if (longest <= MAX_DIMENSION_PX) {
-    // Still re-encode as JPEG if it's a PNG with alpha — but only when it's
-    // actually oversized. For in-range PNGs we keep the data URL as-is.
     return dataUrl;
   }
 
@@ -74,8 +67,6 @@ async function maybeDownscale(
   const ctx = canvas.getContext("2d");
   if (!ctx) return dataUrl;
   ctx.drawImage(img, 0, 0, w, h);
-  // PNG with transparency → keep as PNG. Otherwise re-encode as JPEG to
-  // dramatically reduce size.
   const outType = mimeType === "image/png" ? "image/png" : "image/jpeg";
   const quality = outType === "image/jpeg" ? 0.85 : undefined;
   return canvas.toDataURL(outType, quality);
@@ -91,28 +82,19 @@ function loadImage(src: string): Promise<HTMLImageElement> {
 }
 
 function approxBytes(dataUrl: string): number {
-  // dataUrl is `data:<mime>;base64,<payload>`. base64 length × 3/4 is the
-  // byte count of the payload; the mime prefix is negligible.
   const commaIdx = dataUrl.indexOf(",");
   const b64 = commaIdx === -1 ? "" : dataUrl.slice(commaIdx + 1);
   return Math.floor((b64.length * 3) / 4);
 }
 
 /**
- * Multiline chat input with image attachment support.
- *
- * - Paperclip button on the left opens a file picker (image-only, multi).
- * - Picked files are read → downscaled (if oversized) → stored as base64
- *   data URLs in `pendingImages` state.
- * - Thumbnails appear above the input with an X-to-remove per image.
- * - Enter sends (Shift+Enter = newline). If images are attached, they're
- *   cleared from the input state once the message goes out.
- * - Disabled while a stream is in flight (text + images both locked).
+ * Floating atelier composer — attach references, type, send.
+ * Enter sends; Shift+Enter newline. Drag-and-drop images supported.
  */
 export function ChatInput({
   onSend,
   disabled = false,
-  placeholder = "Reply to Stitch Talk…",
+  placeholder = "Describe the feeling, audience, or a reference…",
 }: ChatInputProps) {
   const [value, setValue] = useState("");
   const [pendingImages, setPendingImages] = useState<ChatImage[]>([]);
@@ -128,8 +110,6 @@ export function ChatInput({
     setValue("");
     setPendingImages([]);
     setError(null);
-    // Reset auto-sized height and re-focus so the user can keep typing
-    // without reaching for the mouse.
     const ta = textareaRef.current;
     if (ta) {
       ta.style.height = "auto";
@@ -191,8 +171,6 @@ export function ChatInput({
     setPendingImages((prev) => prev.filter((_, i) => i !== index));
   }, []);
 
-  // Drag-and-drop: also supported as a nicety. Keeps the UX familiar for
-  // anyone used to uploading into chat.
   const [isDragging, setIsDragging] = useState(false);
   useEffect(() => {
     const onDragEnter = (e: DragEvent) => {
@@ -228,18 +206,14 @@ export function ChatInput({
     !disabled && (value.trim().length > 0 || pendingImages.length > 0);
 
   return (
-    <div
-      className={`border-t border-border bg-background/80 backdrop-blur supports-[backdrop-filter]:bg-background/60 transition-colors ${
-        isDragging ? "ring-2 ring-primary/40 ring-inset" : ""
-      }`}
-    >
-      <div className="mx-auto w-full max-w-2xl px-4 sm:px-6 py-3 space-y-2">
+    <div className="composer">
+      <div className={`composer-panel${isDragging ? " is-dragging" : ""}`}>
         {pendingImages.length > 0 && (
           <PendingImagesRow images={pendingImages} onRemove={removeImage} />
         )}
 
         {error && (
-          <p role="alert" className="text-xs text-destructive">
+          <p role="alert" className="composer-error">
             {error}
           </p>
         )}
@@ -249,7 +223,7 @@ export function ChatInput({
             e.preventDefault();
             submit();
           }}
-          className="flex items-end gap-2"
+          className="composer-row"
         >
           <input
             id={inputId}
@@ -260,25 +234,22 @@ export function ChatInput({
             className="sr-only"
             onChange={(e) => {
               handleFiles(e.target.files);
-              // Reset so picking the same file twice in a row still fires.
               e.target.value = "";
             }}
           />
 
-          <Button
+          <button
             type="button"
-            variant="ghost"
-            size="icon"
+            className="composer-attach"
             onClick={() => fileInputRef.current?.click()}
             disabled={disabled || pendingImages.length >= MAX_IMAGES}
             aria-label={`Attach image${pendingImages.length ? "s" : ""} (max ${MAX_IMAGES})`}
-            title="Attach image"
-            className="size-10 shrink-0"
+            title="Pin a reference image"
           >
             <ImagePlusIcon />
-          </Button>
+          </button>
 
-          <Textarea
+          <textarea
             ref={textareaRef}
             value={value}
             onChange={handleInput}
@@ -287,22 +258,23 @@ export function ChatInput({
             disabled={disabled}
             rows={1}
             aria-label="Type your message"
-            className="min-h-10 max-h-50 resize-none py-2.5"
+            className="composer-textarea"
           />
-          <Button
+
+          <button
             type="submit"
-            size="icon"
+            className="composer-send"
             disabled={!canSend}
             aria-label="Send message"
-            className="size-10 shrink-0"
           >
             <SendIcon />
-          </Button>
+          </button>
         </form>
-        <p className="text-[11px] text-muted-foreground">
-          Enter to send · Shift+Enter for newline · attach up to {MAX_IMAGES} images
-        </p>
       </div>
+      <p className="composer-hint">
+        Enter to send · Shift+Enter for newline · pin up to {MAX_IMAGES}{" "}
+        references
+      </p>
     </div>
   );
 }
@@ -318,27 +290,26 @@ function PendingImagesRow({
     <div
       role="list"
       aria-label="Pending image attachments"
-      className="flex flex-wrap gap-2"
+      className="composer-pending"
     >
       {images.map((img, i) => (
         <div
           key={`${img.name ?? "img"}-${i}`}
           role="listitem"
-          className="relative group size-16 sm:size-20 rounded-lg overflow-hidden border border-border bg-muted"
+          className="composer-thumb"
         >
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
             src={img.dataUrl}
             alt={img.name ?? `Attachment ${i + 1}`}
-            className="size-full object-cover"
           />
           <button
             type="button"
+            className="composer-thumb-remove"
             onClick={() => onRemove(i)}
             aria-label={`Remove ${img.name ?? `attachment ${i + 1}`}`}
-            className="absolute top-0.5 right-0.5 size-5 grid place-items-center rounded-full bg-background/85 text-foreground shadow-sm opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity hover:bg-background"
           >
-            <XIcon className="size-3" />
+            <XIcon />
           </button>
         </div>
       ))}

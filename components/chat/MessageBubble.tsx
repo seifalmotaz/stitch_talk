@@ -4,7 +4,6 @@ import { memo } from "react";
 import { Streamdown } from "streamdown";
 
 import type { ChatImage, ChatMessage } from "@/types/chat";
-import { cn } from "@/lib/utils";
 import { GeneratingIndicator } from "./GeneratingIndicator";
 
 interface MessageBubbleProps {
@@ -12,60 +11,49 @@ interface MessageBubbleProps {
 }
 
 /**
- * Render a single chat message.
+ * Single message on the conversation thread.
  *
- * User messages render as plain text — we don't trust user-typed markdown for
- * v0.1 (also matches what most chat apps do). Any attached images show as a
- * row of thumbnails above the text. Assistant messages render via Streamdown,
- * which handles incomplete markdown tokens gracefully during streaming (no
- * flash of half-rendered bold/headers/lists as tokens arrive).
+ * Assistant replies read as editorial design notes (serif, full-width card).
+ * User turns read as annotations / sticky notes pulled to the right.
+ * A knot on the left spine marks each entry on the continuous stitch line.
  */
 function MessageBubbleImpl({ message }: MessageBubbleProps) {
   const isUser = message.role === "user";
-  const userImages = isUser ? message.images ?? [] : [];
+  const userImages = isUser ? (message.images ?? []) : [];
 
   return (
-    <div
-      className={cn(
-        "flex w-full",
-        isUser ? "justify-end" : "justify-start"
-      )}
+    <article
+      className={`message ${isUser ? "message--user" : "message--assistant"}`}
+      aria-label={isUser ? "Your message" : "Stitch Talk reply"}
     >
-      <div
-        className={cn(
-          "max-w-[85%] sm:max-w-[75%] rounded-2xl px-3.5 py-2.5 text-sm leading-relaxed shadow-sm",
-          isUser
-            ? "bg-primary text-primary-foreground rounded-br-md"
-            : "bg-card text-card-foreground border border-border rounded-bl-md"
-        )}
-      >
-        {userImages.length > 0 && (
-          <AttachedImages images={userImages} />
-        )}
+      <div className="message-knot" aria-hidden="true" />
+      <div className="message-body">
+        <div className="message-meta">
+          <span>{isUser ? "You" : "Stitch Talk"}</span>
+        </div>
+        <div className="message-card">
+          {userImages.length > 0 && <AttachedImages images={userImages} />}
 
-        {isUser ? (
-          <p className="whitespace-pre-wrap break-words">{message.content}</p>
-        ) : message.content.length === 0 ? (
-          <GeneratingIndicator />
-        ) : (
-          <AssistantMarkdown
-            content={message.content}
-            error={message.error}
-            streaming={!!message.streaming}
-          />
-        )}
+          {isUser ? (
+            <p className="message-text">{message.content}</p>
+          ) : message.content.length === 0 ? (
+            <GeneratingIndicator />
+          ) : (
+            <AssistantMarkdown
+              content={message.content}
+              error={message.error}
+              streaming={!!message.streaming}
+            />
+          )}
+        </div>
       </div>
-    </div>
+    </article>
   );
 }
 
 function AttachedImages({ images }: { images: ChatImage[] }) {
   return (
-    <div
-      role="list"
-      aria-label="Attached images"
-      className="mb-2 flex flex-wrap gap-1.5"
-    >
+    <div role="list" aria-label="Attached images" className="message-images">
       {images.map((img, i) => (
         <a
           key={`${img.name ?? "img"}-${i}`}
@@ -73,14 +61,14 @@ function AttachedImages({ images }: { images: ChatImage[] }) {
           href={img.dataUrl}
           target="_blank"
           rel="noopener noreferrer"
-          className="block size-16 sm:size-20 rounded-md overflow-hidden border border-primary-foreground/20 bg-primary-foreground/10 hover:opacity-90 transition-opacity"
-          aria-label={img.name ? `Open ${img.name} in new tab` : `Open attachment ${i + 1}`}
+          aria-label={
+            img.name ? `Open ${img.name} in new tab` : `Open attachment ${i + 1}`
+          }
         >
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
             src={img.dataUrl}
             alt={img.name ?? `Attachment ${i + 1}`}
-            className="size-full object-cover"
           />
         </a>
       ))}
@@ -99,18 +87,20 @@ function AssistantMarkdown({
 }) {
   if (error) {
     return (
-      <p className="text-destructive">
+      <p className="message-error">
         {content || "Something went wrong while generating this reply."}
       </p>
     );
   }
   return (
-    <Streamdown
-      mode={streaming ? "streaming" : "static"}
-      parseIncompleteMarkdown={streaming}
-    >
-      {content}
-    </Streamdown>
+    <div className="st-md">
+      <Streamdown
+        mode={streaming ? "streaming" : "static"}
+        parseIncompleteMarkdown={streaming}
+      >
+        {content}
+      </Streamdown>
+    </div>
   );
 }
 

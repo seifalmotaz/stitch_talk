@@ -1,18 +1,8 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { CheckIcon, CopyIcon, RotateCcwIcon } from "lucide-react";
+import { useEffect, useId, useRef, useState } from "react";
+import { CheckIcon, CopyIcon, RotateCcwIcon, XIcon } from "lucide-react";
 
-import { Button } from "@/components/ui/button";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
-import { Textarea } from "@/components/ui/textarea";
 import type { WireMessage } from "@/types/chat";
 
 interface BriefDialogProps {
@@ -20,9 +10,7 @@ interface BriefDialogProps {
   onOpenChange: (open: boolean) => void;
   /** Fired when the user wants to start over after seeing the brief. */
   onStartNew: () => void;
-  /** Transcript to distill. Captured at render time — won't auto-refresh if
-   * the conversation changes while the dialog is open, which is the behavior
-   * we want (the user has clicked "Generate brief" on a snapshot). */
+  /** Transcript snapshot captured when the dialog opens. */
   messages: WireMessage[];
 }
 
@@ -37,11 +25,8 @@ type Status =
   | { kind: "error"; message: string };
 
 /**
- * Modal that shows the generated design brief plus a short list of "gaps"
- * — things the user should pin down before pasting into a design tool.
- * Handles its own loading / error / ready states. The brief is a single
- * paragraph meant to be copied and pasted elsewhere — the dialog emphasizes
- * copyability (monospace, a dedicated copy button) over visual flourishes.
+ * Printed-brief sheet: distill the conversation into a paste-ready prompt
+ * plus gaps worth pinning down. Custom modal — no shadcn Dialog.
  */
 export function BriefDialog({
   open,
@@ -51,11 +36,11 @@ export function BriefDialog({
 }: BriefDialogProps) {
   const [status, setStatus] = useState<Status>({ kind: "loading" });
   const [copied, setCopied] = useState(false);
+  const titleId = useId();
+  const descId = useId();
+  const closeRef = useRef<HTMLButtonElement | null>(null);
+  const previouslyFocused = useRef<HTMLElement | null>(null);
 
-  // Kick off the generation whenever the dialog opens. Reset state on close
-  // so the next open is a fresh fetch. The setState calls here are the
-  // documented "reset state when a prop changes" pattern; the eslint
-  // warning is overly strict for this case.
   useEffect(() => {
     if (!open) {
       /* eslint-disable react-hooks/set-state-in-effect -- reset on close */
@@ -98,6 +83,31 @@ export function BriefDialog({
     };
   }, [open, messages]);
 
+  // Focus management + Escape + body scroll lock
+  useEffect(() => {
+    if (!open) return;
+
+    previouslyFocused.current = document.activeElement as HTMLElement | null;
+    const t = window.setTimeout(() => closeRef.current?.focus(), 0);
+
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        onOpenChange(false);
+      }
+    };
+    document.addEventListener("keydown", onKey);
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+
+    return () => {
+      window.clearTimeout(t);
+      document.removeEventListener("keydown", onKey);
+      document.body.style.overflow = prevOverflow;
+      previouslyFocused.current?.focus?.();
+    };
+  }, [open, onOpenChange]);
+
   const handleCopy = async () => {
     if (status.kind !== "ready") return;
     try {
@@ -105,8 +115,6 @@ export function BriefDialog({
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
     } catch {
-      // Clipboard might be unavailable (insecure context). Fall back to
-      // selecting the textarea so the user can ⌘+C.
       const ta = document.querySelector<HTMLTextAreaElement>(
         '[data-slot="brief-textarea"]'
       );
@@ -119,54 +127,74 @@ export function BriefDialog({
     onOpenChange(false);
   };
 
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-lg">
-        <DialogHeader>
-          <DialogTitle>Your design brief</DialogTitle>
-          <DialogDescription>
-            One paragraph, ready to paste into Stitch (or wherever you build).
-            Tweak it freely &mdash; it&rsquo;s a starting point, not a contract.
-          </DialogDescription>
-        </DialogHeader>
+  if (!open) return null;
 
-        <div className="min-h-30">
+  return (
+    <div className="modal-root" role="presentation">
+      <button
+        type="button"
+        className="modal-scrim"
+        aria-label="Close brief"
+        onClick={() => onOpenChange(false)}
+      />
+      <div
+        className="modal-sheet"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        aria-describedby={descId}
+      >
+        <button
+          ref={closeRef}
+          type="button"
+          className="modal-close"
+          onClick={() => onOpenChange(false)}
+          aria-label="Close"
+        >
+          <XIcon />
+        </button>
+
+        <p className="modal-kicker">Design brief</p>
+        <h2 id={titleId} className="modal-title">
+          Your stitched prompt
+        </h2>
+        <p id={descId} className="modal-desc">
+          One paragraph, ready to paste into Stitch (or wherever you build).
+          Tweak it freely — it&rsquo;s a starting point, not a contract.
+        </p>
+
+        <div className="modal-body">
           {status.kind === "loading" && (
-            <div className="flex items-center gap-2 text-sm text-muted-foreground py-2">
-              <span className="flex gap-1">
-                {[0, 1, 2].map((i) => (
-                  <span
-                    key={i}
-                    className="size-1.5 rounded-full bg-muted-foreground/60 animate-pulse"
-                    style={{ animationDelay: `${i * 150}ms` }}
-                  />
-                ))}
+            <div className="modal-loading">
+              <span className="gen-stitches" aria-hidden="true">
+                <span />
+                <span />
+                <span />
               </span>
               Distilling your conversation into a brief…
             </div>
           )}
 
           {status.kind === "error" && (
-            <div className="rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
+            <div className="modal-error" role="alert">
               {status.message}
             </div>
           )}
 
           {status.kind === "ready" && (
-            <div className="space-y-3">
-              <Textarea
+            <div>
+              <textarea
                 data-slot="brief-textarea"
+                className="brief-textarea"
                 value={status.prompt}
                 readOnly
-                className="min-h-28 font-mono text-xs leading-relaxed"
                 onFocus={(e) => e.currentTarget.select()}
+                aria-label="Generated design brief"
               />
               {status.gaps.length > 0 && (
-                <div className="rounded-lg border border-border bg-muted/40 px-3 py-2">
-                  <p className="text-xs font-medium text-foreground mb-1.5">
-                    Worth pinning down before you paste this:
-                  </p>
-                  <ul className="text-xs text-muted-foreground space-y-1 list-disc pl-4">
+                <div className="brief-gaps">
+                  <h3>Worth pinning down before you paste this</h3>
+                  <ul>
                     {status.gaps.map((gap, i) => (
                       <li key={i}>{gap}</li>
                     ))}
@@ -177,30 +205,28 @@ export function BriefDialog({
           )}
         </div>
 
-        <DialogFooter>
+        <div className="modal-footer">
           {status.kind === "ready" && (
-            <Button
+            <button
               type="button"
-              variant="outline"
-              size="sm"
+              className="btn btn-ghost"
               onClick={handleCopy}
               aria-label="Copy brief"
             >
               {copied ? <CheckIcon /> : <CopyIcon />}
               {copied ? "Copied" : "Copy"}
-            </Button>
+            </button>
           )}
-          <Button
+          <button
             type="button"
-            variant="default"
-            size="sm"
+            className="btn btn-thread"
             onClick={handleStartNew}
           >
             <RotateCcwIcon />
             Start a new session
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
