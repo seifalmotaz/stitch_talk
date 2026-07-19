@@ -26,12 +26,6 @@ export type Thread = {
   messageCount: number;
 };
 
-export const MOCK_USER = {
-  name: "Alex Rivera",
-  email: "alex@studio.co",
-  initials: "AR",
-};
-
 export const PROJECTS: Project[] = [
   {
     id: "aurora",

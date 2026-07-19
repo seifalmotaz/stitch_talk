@@ -1,3 +1,4 @@
+import { ClerkProvider } from "@clerk/nextjs";
 import type { Metadata } from "next";
 import {
   Bricolage_Grotesque,
@@ -6,6 +7,7 @@ import {
   Source_Serif_4,
 } from "next/font/google";
 import "./globals.css";
+import { clerkAppearance } from "@/lib/clerk-appearance";
 
 const display = Bricolage_Grotesque({
   variable: "--font-display",
@@ -48,7 +50,9 @@ export default function RootLayout({
       lang="en"
       className={`${display.variable} ${ui.variable} ${read.variable} ${mono.variable} h-full`}
     >
-      <body className="h-full">{children}</body>
+      <body className="h-full">
+        <ClerkProvider appearance={clerkAppearance}>{children}</ClerkProvider>
+      </body>
     </html>
   );
 }

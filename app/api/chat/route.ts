@@ -13,6 +13,7 @@
  * in-flight assistant message.
  */
 
+import { auth } from "@clerk/nextjs/server";
 import { streamChat } from "@/lib/openrouter";
 import { fixStreamingMarkdownBoundary } from "@/lib/markdown-fix";
 import { CHAT_SYSTEM_PROMPT } from "@/lib/prompts";
@@ -66,6 +67,11 @@ function sseEncode(payload: string): string {
 }
 
 export async function POST(request: Request): Promise<Response> {
+  const { isAuthenticated } = await auth();
+  if (!isAuthenticated) {
+    return Response.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
   let body: ChatRequestBody;
   try {
     body = (await request.json()) as ChatRequestBody;

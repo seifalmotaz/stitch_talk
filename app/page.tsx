@@ -1,3 +1,9 @@
+import {
+  Show,
+  SignInButton,
+  SignUpButton,
+  UserButton,
+} from "@clerk/nextjs";
 import Link from "next/link";
 import { Logo } from "@/components/brand/Logo";
 
@@ -29,12 +35,24 @@ export default function LandingPage() {
       <header className="land-nav">
         <Logo />
         <nav className="land-nav-actions" aria-label="Account">
-          <Link href="/login" className="btn btn-ghost">
-            Sign in
-          </Link>
-          <Link href="/signup" className="btn btn-thread">
-            Get started
-          </Link>
+          <Show when="signed-out">
+            <SignInButton mode="modal">
+              <button type="button" className="btn btn-ghost">
+                Sign in
+              </button>
+            </SignInButton>
+            <SignUpButton mode="modal">
+              <button type="button" className="btn btn-thread">
+                Get started
+              </button>
+            </SignUpButton>
+          </Show>
+          <Show when="signed-in">
+            <Link href="/dashboard" className="btn btn-thread">
+              Open studio
+            </Link>
+            <UserButton />
+          </Show>
         </nav>
       </header>
 
@@ -53,14 +71,25 @@ export default function LandingPage() {
             actually build from.
           </p>
           <div className="land-cta-row">
-            <Link href="/signup" className="btn btn-thread btn-lg">
-              Start free
-            </Link>
-            <Link href="/dashboard" className="btn btn-ghost btn-lg">
-              View demo studio
-            </Link>
+            <Show when="signed-out">
+              <SignUpButton mode="modal">
+                <button type="button" className="btn btn-thread btn-lg">
+                  Start free
+                </button>
+              </SignUpButton>
+              <SignInButton mode="modal">
+                <button type="button" className="btn btn-ghost btn-lg">
+                  Sign in
+                </button>
+              </SignInButton>
+            </Show>
+            <Show when="signed-in">
+              <Link href="/dashboard" className="btn btn-thread btn-lg">
+                Continue to your studio
+              </Link>
+            </Show>
           </div>
-          <p className="land-note">No credit card · Mock demo available now</p>
+          <p className="land-note">No credit card · Start designing in minutes</p>
         </section>
 
         <section className="land-steps" aria-labelledby="how-heading">
@@ -99,9 +128,18 @@ export default function LandingPage() {
                 <strong>Briefs</strong> are the handoff — not endless chat.
               </li>
             </ul>
-            <Link href="/signup" className="btn btn-primary">
-              Open your studio
-            </Link>
+            <Show when="signed-out">
+              <SignUpButton mode="modal">
+                <button type="button" className="btn btn-primary">
+                  Open your studio
+                </button>
+              </SignUpButton>
+            </Show>
+            <Show when="signed-in">
+              <Link href="/dashboard" className="btn btn-primary">
+                Back to your studio
+              </Link>
+            </Show>
           </div>
         </section>
       </main>

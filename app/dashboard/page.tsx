@@ -1,9 +1,11 @@
+import { auth, currentUser } from "@clerk/nextjs/server";
 import Link from "next/link";
 import type { Metadata } from "next";
+import { redirect } from "next/navigation";
 import { AppShell } from "@/components/shell/AppShell";
 import { PageHeader } from "@/components/shell/PageHeader";
 import { NewProjectButton } from "@/components/dashboard/NewProjectButton";
-import { MOCK_USER, PROJECTS } from "@/lib/mock-data";
+import { PROJECTS } from "@/lib/mock-data";
 
 export const metadata: Metadata = {
   title: "Projects — Stitch Talk",
@@ -13,14 +15,23 @@ export const metadata: Metadata = {
  * Home of the product after auth: a simple list of projects.
  * One primary action — New project. Click a card to open threads.
  */
-export default function DashboardPage() {
+export default async function DashboardPage() {
+  const { isAuthenticated } = await auth();
+  if (!isAuthenticated) redirect("/sign-in");
+
+  const user = await currentUser();
+  const firstName =
+    user?.firstName ??
+    user?.username ??
+    user?.primaryEmailAddress?.emailAddress.split("@")[0] ??
+    "there";
   const projects = PROJECTS;
 
   return (
     <AppShell crumbs={[{ label: "Projects" }]}>
       <div className="page-wrap">
         <PageHeader
-          eyebrow={`Hi, ${MOCK_USER.name.split(" ")[0]}`}
+          eyebrow={`Hi, ${firstName}`}
           title="Projects"
           description="Each project is one product or brand. Open one to continue a thread, or start something new."
           actions={<NewProjectButton />}

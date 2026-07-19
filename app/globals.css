@@ -1,3 +1,5 @@
+@import "@clerk/ui/themes/shadcn.css";
+
 /* ═══════════════════════════════════════════════════════════════════════════
    Stitch Talk — Atelier design system
    Warm paper studio · editorial type · thread as structure
@@ -1987,6 +1989,10 @@ a.btn {
   display: grid;
   place-items: center;
   padding: var(--space-5);
+}
+
+.auth-shell {
+  width: min(100%, 24rem);
 }
 
 .auth-card {

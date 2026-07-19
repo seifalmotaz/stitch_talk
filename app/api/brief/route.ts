@@ -12,6 +12,7 @@
  * rather than us regexing a free-form reply.
  */
 
+import { auth } from "@clerk/nextjs/server";
 import { generateCompletion } from "@/lib/openrouter";
 import { BRIEF_SYSTEM_PROMPT } from "@/lib/prompts";
 import type { WireMessage } from "@/types/chat";
@@ -73,6 +74,11 @@ function parseBriefPayload(raw: string): BriefPayload | null {
 }
 
 export async function POST(request: Request): Promise<Response> {
+  const { isAuthenticated } = await auth();
+  if (!isAuthenticated) {
+    return Response.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
   let body: BriefRequestBody;
   try {
     body = (await request.json()) as BriefRequestBody;
