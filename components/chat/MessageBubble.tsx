@@ -36,12 +36,17 @@ function MessageBubbleImpl({ message }: MessageBubbleProps) {
 
           {isUser ? (
             <p className="message-text">{message.content}</p>
+          ) : message.error ? (
+            <AssistantMarkdown
+              content={message.content}
+              error
+              streaming={false}
+            />
           ) : message.content.length === 0 ? (
             <GeneratingIndicator />
           ) : (
             <AssistantMarkdown
               content={message.content}
-              error={message.error}
               streaming={!!message.streaming}
             />
           )}

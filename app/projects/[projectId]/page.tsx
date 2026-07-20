@@ -1,11 +1,12 @@
 import Link from "next/link";
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
+import { TRPCError } from "@trpc/server";
 import { MessageSquareIcon } from "lucide-react";
 import { AppShell } from "@/components/shell/AppShell";
 import { PageHeader } from "@/components/shell/PageHeader";
 import { NewThreadButton } from "@/components/project/NewThreadButton";
-import { getProject, getThreadsForProject } from "@/lib/mock-data";
+import { getServerCaller } from "@/server/trpc/server";
 
 type Props = {
   params: Promise<{ projectId: string }>;
@@ -13,22 +14,31 @@ type Props = {
 
 export async function generateMetadata({ params }: Props): Promise<Metadata> {
   const { projectId } = await params;
-  const project = getProject(projectId);
-  return {
-    title: project ? `${project.name} — Stitch Talk` : "Project — Stitch Talk",
-  };
+  try {
+    const caller = await getServerCaller();
+    const project = await caller.projects.byId({ projectId });
+    return { title: `${project.name} — Stitch Talk` };
+  } catch {
+    return { title: "Project — Stitch Talk" };
+  }
 }
 
-/**
- * Project hub: list of design threads for one product.
- * Primary action is always "New thread".
- */
+/** Project hub: list of design threads for one product. */
 export default async function ProjectPage({ params }: Props) {
   const { projectId } = await params;
-  const project = getProject(projectId);
-  if (!project) notFound();
+  const caller = await getServerCaller();
 
-  const threads = getThreadsForProject(projectId);
+  let project;
+  let projectThreads;
+  try {
+    [project, projectThreads] = await Promise.all([
+      caller.projects.byId({ projectId }),
+      caller.threads.list({ projectId }),
+    ]);
+  } catch (error) {
+    if (error instanceof TRPCError && error.code === "NOT_FOUND") notFound();
+    throw error;
+  }
 
   return (
     <AppShell
@@ -44,7 +54,7 @@ export default async function ProjectPage({ params }: Props) {
           actions={<NewThreadButton projectId={projectId} />}
         />
 
-        {threads.length === 0 ? (
+        {projectThreads.length === 0 ? (
           <div className="empty-panel">
             <div className="empty-panel-icon" aria-hidden="true">
               <MessageSquareIcon />
@@ -58,21 +68,23 @@ export default async function ProjectPage({ params }: Props) {
           </div>
         ) : (
           <ul className="thread-list">
-            {threads.map((t) => (
-              <li key={t.id}>
+            {projectThreads.map((thread) => (
+              <li key={thread.id}>
                 <Link
-                  href={`/projects/${projectId}/chats/${t.id}`}
+                  href={`/projects/${projectId}/chats/${thread.id}`}
                   className="thread-row"
                 >
                   <span className="thread-knot" aria-hidden="true" />
                   <div className="thread-body">
                     <div className="thread-top">
-                      <h2 className="thread-title">{t.title}</h2>
-                      <time className="thread-time">{t.updatedLabel}</time>
+                      <h2 className="thread-title">{thread.title}</h2>
+                      <time className="thread-time">{thread.updatedLabel}</time>
                     </div>
-                    <p className="thread-preview">{t.preview}</p>
+                    <p className="thread-preview">{thread.preview}</p>
                     <p className="thread-stat">
-                      {t.messageCount} messages
+                      {thread.messageCount === 1
+                        ? "1 message"
+                        : `${thread.messageCount} messages`}
                     </p>
                   </div>
                 </Link>

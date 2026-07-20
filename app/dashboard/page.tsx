@@ -5,7 +5,7 @@ import { redirect } from "next/navigation";
 import { AppShell } from "@/components/shell/AppShell";
 import { PageHeader } from "@/components/shell/PageHeader";
 import { NewProjectButton } from "@/components/dashboard/NewProjectButton";
-import { PROJECTS } from "@/lib/mock-data";
+import { getServerCaller } from "@/server/trpc/server";
 
 export const metadata: Metadata = {
   title: "Projects — Stitch Talk",
@@ -25,7 +25,8 @@ export default async function DashboardPage() {
     user?.username ??
     user?.primaryEmailAddress?.emailAddress.split("@")[0] ??
     "there";
-  const projects = PROJECTS;
+  const caller = await getServerCaller();
+  const projects = await caller.projects.list();
 
   return (
     <AppShell crumbs={[{ label: "Projects" }]}>

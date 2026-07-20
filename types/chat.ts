@@ -14,8 +14,7 @@ export type Role = "user" | "assistant" | "system";
  * side before storing, so a typical 4 MB phone photo becomes ~200 KB.
  */
 export interface ChatImage {
-  /** Base64 data URL — `data:image/png;base64,...`. Rides inline through the
-   *  API and survives localStorage serialization. */
+  /** Local preview data URL before upload, then a short-lived signed object URL. */
   dataUrl: string;
   /** Original MIME type (image/png, image/jpeg, image/webp, image/gif). */
   mimeType: string;
@@ -36,8 +35,8 @@ export interface ChatMessage {
    */
   images?: ChatImage[];
   createdAt: number;
-  /**
-   * Set while the assistant message is still streaming. The server response
+  status?: "complete" | "streaming" | "failed" | "cancelled";
+  /** Set while the assistant message is still streaming. The server response
    * appends to this in place; the UI renders content as it grows.
    */
   streaming?: boolean;

@@ -1,12 +1,14 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import { ArrowLeftIcon, PlusIcon } from "lucide-react";
+import { useRouter } from "next/navigation";
+import { ArrowLeftIcon, PlusIcon, SquareIcon } from "lucide-react";
 
 import { fixInlineMarkdown } from "@/lib/markdown-fix";
-import { clearMessages, loadMessages, saveMessages } from "@/lib/storage";
-import type { ChatImage, ChatMessage, WireMessage } from "@/types/chat";
+import { useTRPCClient } from "@/lib/trpc/client";
+import type { ChatImage, ChatMessage } from "@/types/chat";
+import type { ChatStreamEvents } from "@/types/chat-stream";
 
 import { BriefDialog } from "./BriefDialog";
 import { ChatInput } from "./ChatInput";
@@ -14,207 +16,199 @@ import { EmptyState } from "./EmptyState";
 import { MessageList } from "./MessageList";
 
 export type ChatShellProps = {
-  /** Project this thread belongs to (for chrome / back link). */
-  projectId?: string;
-  projectName?: string;
-  chatTitle?: string;
-  /** Where the back control returns — typically the project hub. */
-  backHref?: string;
+  threadId: string;
+  projectId: string;
+  projectName: string;
+  chatTitle: string;
+  backHref: string;
+  initialMessages: ChatMessage[];
 };
 
-/**
- * The whole chat experience. Owns:
- *   - the message list (loaded from / saved to localStorage)
- *   - the streaming request lifecycle for chat completions
- *   - the brief-generation request lifecycle
- *   - the brief dialog open state
- *
- * Everything else is a presentational child.
- */
+/** Persisted chat experience with optimistic streaming state. */
 export function ChatShell({
+  threadId,
   projectId,
   projectName,
   chatTitle,
   backHref,
-}: ChatShellProps = {}) {
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [hydrated, setHydrated] = useState(false);
+  initialMessages,
+}: ChatShellProps) {
+  const [messages, setMessages] = useState<ChatMessage[]>(initialMessages);
   const [isStreaming, setIsStreaming] = useState(false);
   const [streamError, setStreamError] = useState<string | null>(null);
   const [briefOpen, setBriefOpen] = useState(false);
-
   const abortRef = useRef<AbortController | null>(null);
-
-  useEffect(() => {
-    /* eslint-disable react-hooks/set-state-in-effect -- hydrate after SSR */
-    const stored = loadMessages().map((m) =>
-      m.role === "assistant" ? { ...m, content: fixInlineMarkdown(m.content) } : m
-    );
-    setMessages(stored);
-    setHydrated(true);
-    /* eslint-enable react-hooks/set-state-in-effect */
-  }, []);
-
-  useEffect(() => {
-    if (!hydrated) return;
-    saveMessages(messages);
-  }, [messages, hydrated]);
+  const requestIdRef = useRef<string | null>(null);
+  const router = useRouter();
+  const trpcClient = useTRPCClient();
 
   const userTurnCount = useMemo(
-    () => messages.filter((m) => m.role === "user").length,
-    [messages]
+    () => messages.filter((message) => message.role === "user").length,
+    [messages],
   );
   const canGenerateBrief = userTurnCount >= 2 && !isStreaming;
 
-  const handleNewChat = useCallback(() => {
-    if (isStreaming) {
-      abortRef.current?.abort();
+  const reconcile = useCallback(async () => {
+    const thread = await trpcClient.threads.byId.query({ threadId });
+    setMessages(thread.messages);
+    router.refresh();
+  }, [router, threadId, trpcClient]);
+
+  const createNewThread = useCallback(async () => {
+    if (isStreaming) return;
+    const thread = await trpcClient.threads.create.mutate({ projectId });
+    router.push(`/projects/${projectId}/chats/${thread.id}`);
+    router.refresh();
+  }, [isStreaming, projectId, router, trpcClient]);
+
+  const stopStreaming = useCallback(() => {
+    const requestId = requestIdRef.current;
+    abortRef.current?.abort();
+    if (requestId) {
+      void trpcClient.messages.cancel.mutate({ threadId, requestId });
     }
-    clearMessages();
-    setMessages([]);
-    setStreamError(null);
-  }, [isStreaming]);
+  }, [threadId, trpcClient]);
 
   const handleSend = useCallback(
     async (text: string, images: ChatImage[]) => {
       const trimmed = text.trim();
       if ((!trimmed && images.length === 0) || isStreaming) return;
 
-      setStreamError(null);
-
-      const userMsg: ChatMessage = {
-        id: crypto.randomUUID(),
+      const requestId = crypto.randomUUID();
+      requestIdRef.current = requestId;
+      const optimisticUserId = `local-user-${requestId}`;
+      const optimisticAssistantId = `local-assistant-${requestId}`;
+      const userMessage: ChatMessage = {
+        id: optimisticUserId,
         role: "user",
         content: trimmed,
-        images: images.length > 0 ? images.slice() : undefined,
+        images: images.length > 0 ? images : undefined,
         createdAt: Date.now(),
       };
-
-      const assistantId = crypto.randomUUID();
-      const assistantMsg: ChatMessage = {
-        id: assistantId,
+      const assistantMessage: ChatMessage = {
+        id: optimisticAssistantId,
         role: "assistant",
         content: "",
         createdAt: Date.now(),
         streaming: true,
       };
 
-      setMessages((prev) => [...prev, userMsg, assistantMsg]);
+      setMessages((current) => [...current, userMessage, assistantMessage]);
+      setStreamError(null);
       setIsStreaming(true);
-
       const controller = new AbortController();
       abortRef.current = controller;
+      let serverTurnStarted = false;
+      let assistantId = optimisticAssistantId;
 
       try {
-        const wireMessages: WireMessage[] = [...messages, userMsg].map((m) => ({
-          role: m.role,
-          content: m.content,
-          ...(m.images && m.images.length > 0 ? { images: m.images } : {}),
-        }));
-
-        const res = await fetch("/api/chat", {
+        const attachmentIds = await Promise.all(
+          images.map((image) => uploadImage(image, threadId, trpcClient)),
+        );
+        const response = await fetch("/api/chat", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ messages: wireMessages }),
+          body: JSON.stringify({
+            threadId,
+            requestId,
+            content: trimmed,
+            attachmentIds,
+          }),
           signal: controller.signal,
         });
-
-        if (!res.ok || !res.body) {
-          const errText = await res.text().catch(() => "");
-          throw new Error(
-            errText || `Chat request failed with status ${res.status}`
-          );
+        if (!response.ok || !response.body) {
+          const payload = (await response.json().catch(() => null)) as
+            | { error?: string }
+            | null;
+          throw new Error(payload?.error ?? `Chat request failed (${response.status})`);
         }
 
-        await consumeSseStream(res.body, {
-          onDelta: (delta) => {
-            setMessages((prev) =>
-              prev.map((m) =>
-                m.id === assistantId
-                  ? { ...m, content: m.content + delta }
-                  : m
-              )
+        await consumeSseStream(response.body, {
+          onStart(payload) {
+            serverTurnStarted = true;
+            assistantId = payload.assistantMessageId;
+            setMessages((current) =>
+              current.map((message) => {
+                if (message.id === optimisticUserId && payload.userMessageId) {
+                  return { ...message, id: payload.userMessageId };
+                }
+                if (message.id === optimisticAssistantId) {
+                  return { ...message, id: payload.assistantMessageId };
+                }
+                return message;
+              }),
             );
           },
-          onErrorEvent: (message) => {
-            setMessages((prev) =>
-              prev.map((m) =>
-                m.id === assistantId
-                  ? {
-                      ...m,
-                      content:
-                        m.content ||
-                        "Sorry — I hit an error while generating that reply. Try again?",
-                      error: true,
-                      streaming: false,
-                    }
-                  : m
-              )
+          onDelta(delta) {
+            setMessages((current) =>
+              current.map((message) =>
+                message.id === assistantId
+                  ? { ...message, content: message.content + delta }
+                  : message,
+              ),
             );
+          },
+          onError(message) {
             setStreamError(message);
           },
         });
-      } catch (err) {
-        if ((err as { name?: string })?.name === "AbortError") return;
-        const message =
-          err instanceof Error ? err.message : "Something went wrong";
-        setMessages((prev) =>
-          prev.map((m) =>
-            m.id === assistantId
+      } catch (error) {
+        const cancelled = (error as { name?: string })?.name === "AbortError";
+        if (!cancelled) {
+          setStreamError(
+            error instanceof Error ? error.message : "Something went wrong",
+          );
+        }
+        if (!serverTurnStarted) {
+          setMessages((current) =>
+            current.filter(
+              (message) =>
+                message.id !== optimisticUserId &&
+                message.id !== optimisticAssistantId,
+            ),
+          );
+        }
+      } finally {
+        setMessages((current) =>
+          current.map((message) =>
+            message.id === assistantId
               ? {
-                  ...m,
-                  content:
-                    m.content ||
-                    "Sorry — I hit an error while generating that reply. Try again?",
-                  error: true,
+                  ...message,
+                  content: fixInlineMarkdown(message.content),
                   streaming: false,
                 }
-              : m
-          )
-        );
-        setStreamError(message);
-      } finally {
-        setMessages((prev) =>
-          prev.map((m) => {
-            if (m.id !== assistantId) return m;
-            const cleaned = fixInlineMarkdown(m.content);
-            return cleaned === m.content
-              ? { ...m, streaming: false }
-              : { ...m, content: cleaned, streaming: false };
-          })
+              : message,
+          ),
         );
         setIsStreaming(false);
         abortRef.current = null;
+        requestIdRef.current = null;
+        if (serverTurnStarted) {
+          await reconcile().catch(() => undefined);
+        }
       }
     },
-    [isStreaming, messages]
+    [isStreaming, reconcile, threadId, trpcClient],
   );
 
   const handlePickStarter = useCallback(
-    (text: string) => {
-      void handleSend(text, []);
-    },
-    [handleSend]
+    (text: string) => void handleSend(text, []),
+    [handleSend],
   );
-
-  const briefMessages = useMemo<WireMessage[]>(
-    () => messages.map((m) => ({ role: m.role, content: m.content })),
-    [messages]
-  );
-
   const hasMessages = messages.length > 0;
 
   return (
     <div className="atelier">
       <Header
         canGenerateBrief={canGenerateBrief}
-        onNewChat={handleNewChat}
+        onNewThread={() => void createNewThread()}
+        onStop={stopStreaming}
         onGenerateBrief={() => setBriefOpen(true)}
         hasMessages={hasMessages}
+        isStreaming={isStreaming}
         projectName={projectName}
         chatTitle={chatTitle}
         backHref={backHref}
-        projectId={projectId}
       />
 
       <main className="atelier-main">
@@ -223,7 +217,6 @@ export function ChatShell({
             {streamError}
           </div>
         )}
-
         {hasMessages ? (
           <MessageList messages={messages} />
         ) : (
@@ -236,78 +229,88 @@ export function ChatShell({
       <BriefDialog
         open={briefOpen}
         onOpenChange={setBriefOpen}
-        onStartNew={handleNewChat}
-        messages={briefMessages}
+        onStartNew={() => void createNewThread()}
+        threadId={threadId}
       />
     </div>
   );
 }
 
+async function uploadImage(
+  image: ChatImage,
+  threadId: string,
+  trpcClient: ReturnType<typeof useTRPCClient>,
+) {
+  const blob = await fetch(image.dataUrl).then((response) => response.blob());
+  const prepared = await trpcClient.attachments.createUpload.mutate({
+    threadId,
+    originalName: image.name,
+    mimeType: image.mimeType as
+      | "image/jpeg"
+      | "image/png"
+      | "image/webp"
+      | "image/gif",
+    byteSize: blob.size,
+  });
+  const uploaded = await fetch(prepared.uploadUrl, {
+    method: "PUT",
+    headers: { "content-type": image.mimeType },
+    body: blob,
+  });
+  if (!uploaded.ok) throw new Error(`Image upload failed (${uploaded.status})`);
+  await trpcClient.attachments.completeUpload.mutate({
+    attachmentId: prepared.attachmentId,
+  });
+  return prepared.attachmentId;
+}
+
 interface HeaderProps {
   canGenerateBrief: boolean;
-  onNewChat: () => void;
+  onNewThread: () => void;
+  onStop: () => void;
   onGenerateBrief: () => void;
   hasMessages: boolean;
-  projectId?: string;
-  projectName?: string;
-  chatTitle?: string;
-  backHref?: string;
+  isStreaming: boolean;
+  projectName: string;
+  chatTitle: string;
+  backHref: string;
 }
 
 function Header({
   canGenerateBrief,
-  onNewChat,
+  onNewThread,
+  onStop,
   onGenerateBrief,
   hasMessages,
-  projectId,
+  isStreaming,
   projectName,
   chatTitle,
   backHref,
 }: HeaderProps) {
-  const inProject = Boolean(projectName && backHref);
-
   return (
     <header className="atelier-header">
       <div className="atelier-brand">
-        {inProject ? (
-          <>
-            <Link
-              href={backHref!}
-              className="atelier-back"
-              aria-label={`Back to ${projectName}`}
-            >
-              <ArrowLeftIcon />
-            </Link>
-            <div className="atelier-brand-text">
-              <p className="atelier-context">{projectName}</p>
-              <h1>{chatTitle ?? "Thread"}</h1>
-            </div>
-          </>
-        ) : (
-          <div className="atelier-brand-text">
-            <h1>Stitch Talk</h1>
-            <p>Design the feel before anything gets generated.</p>
-          </div>
-        )}
+        <Link
+          href={backHref}
+          className="atelier-back"
+          aria-label={`Back to ${projectName}`}
+        >
+          <ArrowLeftIcon />
+        </Link>
+        <div className="atelier-brand-text">
+          <p className="atelier-context">{projectName}</p>
+          <h1>{chatTitle}</h1>
+        </div>
       </div>
       <div className="atelier-actions">
-        {hasMessages && (
-          projectId ? (
-            <Link
-              href={`/projects/${projectId}/chats/new`}
-              className="btn btn-ghost"
-              aria-label="Start a new thread"
-            >
-              <PlusIcon />
-              <span className="btn-label-hide-sm">New thread</span>
-            </Link>
-          ) : (
-            <button
-              type="button"
-              className="btn btn-ghost"
-              onClick={onNewChat}
-              aria-label="Start a new chat"
-            >
+        {isStreaming ? (
+          <button type="button" className="btn btn-ghost" onClick={onStop}>
+            <SquareIcon />
+            <span className="btn-label-hide-sm">Stop</span>
+          </button>
+        ) : (
+          hasMessages && (
+            <button type="button" className="btn btn-ghost" onClick={onNewThread}>
               <PlusIcon />
               <span className="btn-label-hide-sm">New thread</span>
             </button>
@@ -332,20 +335,17 @@ function Header({
   );
 }
 
-/**
- * Parse a Server-Sent Events body and emit data payloads.
- */
 async function consumeSseStream(
   body: ReadableStream<Uint8Array>,
   handlers: {
+    onStart: (payload: ChatStreamEvents["start"]) => void;
     onDelta: (delta: string) => void;
-    onErrorEvent: (message: string) => void;
-  }
-): Promise<void> {
+    onError: (message: string) => void;
+  },
+) {
   const reader = body.getReader();
-  const decoder = new TextDecoder("utf-8");
+  const decoder = new TextDecoder();
   let buffer = "";
-  let currentEvent: string | null = null;
 
   while (true) {
     const { value, done } = await reader.read();
@@ -353,41 +353,38 @@ async function consumeSseStream(
     buffer += decoder.decode(value, { stream: true });
 
     let boundary = buffer.indexOf("\n\n");
-    while (boundary !== -1) {
-      const rawEvent = buffer.slice(0, boundary);
+    while (boundary >= 0) {
+      const raw = buffer.slice(0, boundary);
       buffer = buffer.slice(boundary + 2);
       boundary = buffer.indexOf("\n\n");
 
-      currentEvent = null;
-      const dataLines: string[] = [];
-      for (const line of rawEvent.split("\n")) {
-        if (line.startsWith(":")) continue;
-        if (line.startsWith("event:")) {
-          currentEvent = line.slice(6).trim();
-        } else if (line.startsWith("data:")) {
-          dataLines.push(line.slice(5));
-        }
+      let event = "message";
+      const data: string[] = [];
+      for (const line of raw.split("\n")) {
+        if (line.startsWith("event:")) event = line.slice(6).trim();
+        if (line.startsWith("data:")) data.push(line.slice(5).trimStart());
       }
-      const data = dataLines.join("\n");
-      if (!data) continue;
-      if (data === "[DONE]") return;
-      if (currentEvent === "error") {
-        try {
-          const parsed = JSON.parse(data) as unknown;
-          handlers.onErrorEvent(
-            typeof parsed === "string" ? parsed : "Upstream error"
-          );
-        } catch {
-          handlers.onErrorEvent(data);
-        }
+      if (data.length === 0) continue;
+      let payload: Record<string, unknown>;
+      try {
+        payload = JSON.parse(data.join("\n")) as Record<string, unknown>;
+      } catch {
+        handlers.onError("A malformed stream event was ignored.");
         continue;
       }
-      handlers.onDelta(data);
+      if (event === "start") {
+        handlers.onStart(payload as ChatStreamEvents["start"]);
+      }
+      if (event === "delta" && typeof payload.delta === "string") {
+        handlers.onDelta(payload.delta);
+      }
+      if (event === "error") {
+        handlers.onError(
+          typeof payload.message === "string"
+            ? payload.message
+            : "Generation failed",
+        );
+      }
     }
-  }
-
-  const trailing = buffer.replace(/\n+$/, "");
-  if (trailing.length > 0 && trailing !== "[DONE]") {
-    handlers.onDelta(trailing);
   }
 }

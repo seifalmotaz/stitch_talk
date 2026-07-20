@@ -107,26 +107,30 @@ function toChatMessages(
  */
 export async function* streamChat(
   messages: WireMessage[],
-  systemPrompt: string
+  systemPrompt: string,
+  signal?: AbortSignal,
 ): AsyncGenerator<string, void, void> {
   const client = getClient();
   const model = getModel();
 
-  const stream = await client.chat.send({
-    chatRequest: {
-      model,
-      stream: true,
-      // The SDK's ChatMessages type is a discriminated union by role that
-      // doesn't capture our richer multimodal shape at the type level. The
-      // runtime payload is exactly what OpenRouter expects (string content
-      // for text, array of {type,text|imageUrl} parts for multimodal).
-      messages: toChatMessages(messages, systemPrompt) as never,
-      // Enable high reasoning effort for reasoning models (e.g. Gemma 4 31B)
-      reasoning: {
-        effort: "high",
+  const stream = await client.chat.send(
+    {
+      chatRequest: {
+        model,
+        stream: true,
+        // The SDK's ChatMessages type is a discriminated union by role that
+        // doesn't capture our richer multimodal shape at the type level. The
+        // runtime payload is exactly what OpenRouter expects (string content
+        // for text, array of {type,text|imageUrl} parts for multimodal).
+        messages: toChatMessages(messages, systemPrompt) as never,
+        // Enable high reasoning effort for reasoning models (e.g. Gemma 4 31B)
+        reasoning: {
+          effort: "high",
+        },
       },
     },
-  });
+    { signal },
+  );
 
   // The SDK returns `SendChatCompletionRequestResponse` (a discriminated
   // union) at the type level, but at runtime it's `EventStream<ChatStreamChunk>`
@@ -169,7 +173,7 @@ export async function generateCompletion(
       reasoning: {
         effort: "high",
       },
-    } as any,
+    } as never,
   });
 
   // Non-streaming shape: ChatResult { choices: [{ message: { content } }] }

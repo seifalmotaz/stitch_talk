@@ -10,6 +10,12 @@ import {
 import { ImagePlusIcon, SendIcon, XIcon } from "lucide-react";
 
 import type { ChatImage } from "@/types/chat";
+import {
+  ALLOWED_IMAGE_TYPES,
+  MAX_ATTACHMENT_BYTES,
+  MAX_ATTACHMENTS_PER_MESSAGE,
+  isAllowedImageType,
+} from "@/types/uploads";
 
 interface ChatInputProps {
   onSend: (text: string, images: ChatImage[]) => void;
@@ -17,9 +23,7 @@ interface ChatInputProps {
   placeholder?: string;
 }
 
-const MAX_IMAGES = 4;
 const MAX_DIMENSION_PX = 1200;
-const ACCEPTED_TYPES = ["image/jpeg", "image/png", "image/webp", "image/gif"];
 
 /**
  * Read a File as a base64 data URL, then optionally downscale via <canvas>
@@ -28,10 +32,15 @@ const ACCEPTED_TYPES = ["image/jpeg", "image/png", "image/webp", "image/gif"];
 async function fileToChatImage(file: File): Promise<ChatImage> {
   const dataUrl = await readAsDataUrl(file);
   const downscaled = await maybeDownscale(dataUrl, file.type);
+  const mimeType = downscaled.slice(5, downscaled.indexOf(";")) || file.type;
+  const size = approxBytes(downscaled);
+  if (size > MAX_ATTACHMENT_BYTES) {
+    throw new Error(`"${file.name}" is larger than 8MB after processing.`);
+  }
   return {
     dataUrl: downscaled,
-    mimeType: file.type,
-    size: approxBytes(downscaled),
+    mimeType,
+    size,
     name: file.name,
   };
 }
@@ -136,15 +145,15 @@ export function ChatInput({
       if (!files || files.length === 0) return;
       setError(null);
 
-      const room = MAX_IMAGES - pendingImages.length;
+      const room = MAX_ATTACHMENTS_PER_MESSAGE - pendingImages.length;
       if (room <= 0) {
-        setError(`You can attach up to ${MAX_IMAGES} images per message.`);
+        setError(`You can attach up to ${MAX_ATTACHMENTS_PER_MESSAGE} images per message.`);
         return;
       }
 
       const accepted: File[] = [];
       for (const file of Array.from(files)) {
-        if (!ACCEPTED_TYPES.includes(file.type)) {
+        if (!isAllowedImageType(file.type)) {
           setError(
             `"${file.name || "file"}" isn't a supported image type. Use JPG, PNG, WebP, or GIF.`
           );
@@ -157,7 +166,7 @@ export function ChatInput({
 
       try {
         const processed = await Promise.all(accepted.map(fileToChatImage));
-        setPendingImages((prev) => [...prev, ...processed].slice(0, MAX_IMAGES));
+        setPendingImages((prev) => [...prev, ...processed].slice(0, MAX_ATTACHMENTS_PER_MESSAGE));
       } catch (err) {
         const message =
           err instanceof Error ? err.message : "Failed to process image";
@@ -229,7 +238,7 @@ export function ChatInput({
             id={inputId}
             ref={fileInputRef}
             type="file"
-            accept={ACCEPTED_TYPES.join(",")}
+            accept={ALLOWED_IMAGE_TYPES.join(",")}
             multiple
             className="sr-only"
             onChange={(e) => {
@@ -242,8 +251,8 @@ export function ChatInput({
             type="button"
             className="composer-attach"
             onClick={() => fileInputRef.current?.click()}
-            disabled={disabled || pendingImages.length >= MAX_IMAGES}
-            aria-label={`Attach image${pendingImages.length ? "s" : ""} (max ${MAX_IMAGES})`}
+            disabled={disabled || pendingImages.length >= MAX_ATTACHMENTS_PER_MESSAGE}
+            aria-label={`Attach image${pendingImages.length ? "s" : ""} (max ${MAX_ATTACHMENTS_PER_MESSAGE})`}
             title="Pin a reference image"
           >
             <ImagePlusIcon />
@@ -272,7 +281,7 @@ export function ChatInput({
         </form>
       </div>
       <p className="composer-hint">
-        Enter to send · Shift+Enter for newline · pin up to {MAX_IMAGES}{" "}
+        Enter to send · Shift+Enter for newline · pin up to {MAX_ATTACHMENTS_PER_MESSAGE}{" "}
         references
       </p>
     </div>

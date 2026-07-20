@@ -1,50 +1,50 @@
 import type { Metadata } from "next";
-import { notFound } from "next/navigation";
+import { notFound, redirect } from "next/navigation";
+import { TRPCError } from "@trpc/server";
 import { ChatShell } from "@/components/chat/ChatShell";
-import { getProject, getThread } from "@/lib/mock-data";
+import { getServerCaller } from "@/server/trpc/server";
 
 type Props = {
   params: Promise<{ projectId: string; chatId: string }>;
 };
 
 export async function generateMetadata({ params }: Props): Promise<Metadata> {
-  const { projectId, chatId } = await params;
-  const project = getProject(projectId);
-  if (!project) return { title: "Chat — Stitch Talk" };
-  if (chatId === "new") {
-    return { title: `New thread · ${project.name} — Stitch Talk` };
+  const { chatId } = await params;
+  if (chatId === "new") return { title: "New thread — Stitch Talk" };
+  try {
+    const caller = await getServerCaller();
+    const thread = await caller.threads.byId({ threadId: chatId });
+    return {
+      title: `${thread.title} · ${thread.projectName} — Stitch Talk`,
+    };
+  } catch {
+    return { title: "Thread — Stitch Talk" };
   }
-  const thread = getThread(projectId, chatId);
-  return {
-    title: thread
-      ? `${thread.title} · ${project.name} — Stitch Talk`
-      : `Thread · ${project.name} — Stitch Talk`,
-  };
 }
 
-/**
- * Full chat experience inside a project.
- * chatId = "new" starts a blank thread; otherwise mock title from data.
- */
+/** Full persisted chat experience inside a project. */
 export default async function ChatPage({ params }: Props) {
   const { projectId, chatId } = await params;
-  const project = getProject(projectId);
-  if (!project) notFound();
+  if (chatId === "new") redirect(`/projects/${projectId}`);
 
-  const isNew = chatId === "new";
-  const thread = isNew ? undefined : getThread(projectId, chatId);
-
-  // Unknown thread ids still open a usable chat (mock-friendly).
-  const chatTitle = isNew
-    ? "New thread"
-    : thread?.title ?? "Design thread";
+  const caller = await getServerCaller();
+  let thread;
+  try {
+    thread = await caller.threads.byId({ threadId: chatId });
+  } catch (error) {
+    if (error instanceof TRPCError && error.code === "NOT_FOUND") notFound();
+    throw error;
+  }
+  if (thread.projectId !== projectId) notFound();
 
   return (
     <ChatShell
-      projectId={projectId}
-      projectName={project.name}
-      chatTitle={chatTitle}
-      backHref={`/projects/${projectId}`}
+      threadId={thread.id}
+      projectId={thread.projectId}
+      projectName={thread.projectName}
+      chatTitle={thread.title}
+      backHref={`/projects/${thread.projectId}`}
+      initialMessages={thread.messages}
     />
   );
 }

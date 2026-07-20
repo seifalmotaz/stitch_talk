@@ -1,8 +1,10 @@
 "use client";
 
+import { useMutation } from "@tanstack/react-query";
 import { useRouter } from "next/navigation";
 import { useId, useState } from "react";
 import { PlusIcon, XIcon } from "lucide-react";
+import { useTRPC } from "@/lib/trpc/client";
 
 /**
  * Primary dashboard action: open a tiny create dialog, then route into
@@ -17,15 +19,23 @@ export function NewProjectButton({
   const [name, setName] = useState("");
   const titleId = useId();
   const router = useRouter();
+  const trpc = useTRPC();
+  const createProject = useMutation(trpc.projects.create.mutationOptions());
 
-  const submit = (e: React.FormEvent) => {
+  const submit = async (e: React.SubmitEvent<HTMLFormElement>) => {
     e.preventDefault();
     const trimmed = name.trim();
-    if (!trimmed) return;
-    // Mock: always land on the empty "market" project as a fresh workspace.
-    setOpen(false);
-    setName("");
-    router.push("/projects/market");
+    if (!trimmed || createProject.isPending) return;
+
+    try {
+      const project = await createProject.mutateAsync({ name: trimmed });
+      setOpen(false);
+      setName("");
+      router.push(`/projects/${project.id}`);
+      router.refresh();
+    } catch {
+      // Mutation state renders the server error inside the dialog.
+    }
   };
 
   return (
@@ -80,6 +90,11 @@ export function NewProjectButton({
                   required
                 />
               </label>
+              {createProject.error && (
+                <p className="auth-error" role="alert">
+                  {createProject.error.message}
+                </p>
+              )}
               <div className="modal-footer">
                 <button
                   type="button"
@@ -91,9 +106,9 @@ export function NewProjectButton({
                 <button
                   type="submit"
                   className="btn btn-thread"
-                  disabled={!name.trim()}
+                  disabled={!name.trim() || createProject.isPending}
                 >
-                  Create project
+                  {createProject.isPending ? "Creating…" : "Create project"}
                 </button>
               </div>
             </form>

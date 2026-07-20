@@ -1,145 +1,189 @@
-/**
- * POST /api/chat — streaming chat completion.
- *
- * Accepts: { messages: { role, content, images? }[] }
- *   - `content` is the text part of the message.
- *   - `images` is optional. If present, the message becomes multimodal:
- *     `content` stays as the text part, and each image is sent as a
- *     `image_url` part with a base64 data URL.
- * Streams: text/event-stream with `data: <delta>` chunks, terminated by
- *          `data: [DONE]` on success or `event: error\ndata: <msg>` on failure.
- *
- * The client (ChatShell) parses each `data:` line and appends it to the
- * in-flight assistant message.
- */
-
 import { auth } from "@clerk/nextjs/server";
+import type {
+  ChatStreamEventName,
+  ChatStreamEvents,
+} from "@/types/chat-stream";
+import { z } from "zod";
+import {
+  chatRequestSchema,
+  type ChatRequestInput,
+} from "@/server/chat/contract";
+import { encodeSseEvent } from "@/server/chat/sse";
+import {
+  fixInlineMarkdown,
+  fixStreamingMarkdownBoundary,
+} from "@/lib/markdown-fix";
 import { streamChat } from "@/lib/openrouter";
-import { fixStreamingMarkdownBoundary } from "@/lib/markdown-fix";
 import { CHAT_SYSTEM_PROMPT } from "@/lib/prompts";
-import type { ChatImage, WireMessage } from "@/types/chat";
+import {
+  checkpointAssistant,
+  finishAssistant,
+  loadModelTranscript,
+  startTurn,
+} from "@/server/dal/messages";
+import { ensureAppUser } from "@/server/dal/users";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-interface ChatRequestBody {
-  messages?: WireMessage[];
-}
-
-// Per-message image limits. The client also enforces these before sending
-// (max 4 images, max 5MB each after resize) — server validation is
-// defense in depth.
-const MAX_IMAGES_PER_MESSAGE = 4;
-const ALLOWED_IMAGE_MIME_PREFIXES = ["image/jpeg", "image/png", "image/webp", "image/gif"];
-const DATA_URL_RE = /^data:([^;]+);base64,/;
-
-function isValidImage(img: unknown): img is ChatImage {
-  if (!img || typeof img !== "object") return false;
-  const i = img as ChatImage;
-  if (typeof i.dataUrl !== "string" || !i.dataUrl.startsWith("data:")) return false;
-  const m = i.dataUrl.match(DATA_URL_RE);
-  if (!m) return false;
-  if (!ALLOWED_IMAGE_MIME_PREFIXES.includes(m[1])) return false;
-  if (typeof i.size !== "number" || i.size <= 0 || i.size > 8 * 1024 * 1024) return false;
-  return true;
-}
-
-function isWireMessage(value: unknown): value is WireMessage {
-  if (!value || typeof value !== "object") return false;
-  const m = value as WireMessage;
-  if (m.role !== "user" && m.role !== "assistant") return false;
-  if (typeof m.content !== "string") return false;
-  if (m.images !== undefined) {
-    if (!Array.isArray(m.images)) return false;
-    if (m.images.length > MAX_IMAGES_PER_MESSAGE) return false;
-    if (!m.images.every(isValidImage)) return false;
-  }
-  return true;
-}
-
-function sseEncode(payload: string): string {
-  // SSE spec allows either `data: <value>` or `data:<value>` — the space is
-  // considered part of the value. We omit it so the payload round-trips
-  // byte-for-byte; otherwise every chunk would carry a phantom leading space
-  // that breaks token concatenation downstream (e.g. BPE tokens like
-  // " sounds" become "  sounds" after framing).
-  return `data:${payload}\n\n`;
-}
-
 export async function POST(request: Request): Promise<Response> {
-  const { isAuthenticated } = await auth();
-  if (!isAuthenticated) {
+  const { userId } = await auth();
+  if (!userId) {
+    return Response.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  const active = await ensureAppUser(userId);
+  if (!active) {
     return Response.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  let body: ChatRequestBody;
+  let input: ChatRequestInput;
   try {
-    body = (await request.json()) as ChatRequestBody;
-  } catch {
-    return new Response(JSON.stringify({ error: "Invalid JSON body" }), {
-      status: 400,
-      headers: { "content-type": "application/json" },
-    });
-  }
-
-  const messages = body.messages;
-  if (
-    !Array.isArray(messages) ||
-    messages.length === 0 ||
-    !messages.every(isWireMessage)
-  ) {
-    return new Response(
-      JSON.stringify({
-        error: `Body must include a non-empty messages array. Each message needs role (user|assistant), content (string), and optional images (array of {dataUrl, size, mimeType}, max ${MAX_IMAGES_PER_MESSAGE}, each ≤ 8MB, data URL with image/{jpeg,png,webp,gif}).`,
-      }),
-      { status: 400, headers: { "content-type": "application/json" } }
+    input = chatRequestSchema.parse(await request.json());
+  } catch (error) {
+    return Response.json(
+      {
+        error:
+          error instanceof z.ZodError
+            ? error.issues[0]?.message ?? "Invalid request"
+            : "Invalid JSON body",
+      },
+      { status: 400 },
     );
   }
 
-  let stream: ReadableStream<Uint8Array>;
+  let turn: Awaited<ReturnType<typeof startTurn>>;
   try {
-    stream = new ReadableStream<Uint8Array>({
-      async start(controller) {
-        const encoder = new TextEncoder();
-        // Accumulated text so the boundary-fix helper can decide whether to
-        // prepend a paragraph break to each incoming delta.
-        let accumulated = "";
-        try {
-          for await (const rawDelta of streamChat(messages, CHAT_SYSTEM_PROMPT)) {
-            const delta = fixStreamingMarkdownBoundary(accumulated, rawDelta);
-            accumulated += delta;
-            controller.enqueue(encoder.encode(sseEncode(delta)));
-          }
-          controller.enqueue(encoder.encode(sseEncode("[DONE]")));
-          controller.close();
-        } catch (err) {
-          const message =
-            err instanceof Error ? err.message : "Unknown upstream error";
-          // Emit a structured error event the client can surface inline.
-          controller.enqueue(
-            encoder.encode(`event: error\ndata: ${JSON.stringify(message)}\n\n`)
-          );
-          controller.enqueue(encoder.encode(sseEncode("[DONE]")));
-          controller.close();
-        }
-      },
-    });
-  } catch (err) {
-    const message =
-      err instanceof Error ? err.message : "Failed to start chat stream";
-    return new Response(JSON.stringify({ error: message }), {
-      status: 500,
-      headers: { "content-type": "application/json" },
-    });
+    turn = await startTurn(userId, input);
+  } catch (error) {
+    console.error("Could not start persisted chat turn", error);
+    return Response.json(
+      { error: "This chat turn could not be started. Please try again." },
+      { status: 409 },
+    );
+  }
+  if (!turn) return Response.json({ error: "Thread not found" }, { status: 404 });
+
+  if (!turn.created) {
+    if (turn.assistantStatus === "complete") {
+      return replayCompletedTurn(turn.assistantMessageId, turn.assistantContent);
+    }
+    return Response.json(
+      { error: "This generation request is already active or finished" },
+      { status: 409 },
+    );
   }
 
-  return new Response(stream, {
-    headers: {
-      "content-type": "text/event-stream; charset=utf-8",
-      "cache-control": "no-cache, no-transform",
-      // Disable nginx-style buffering if the app is behind a proxy.
-      "x-accel-buffering": "no",
-      connection: "keep-alive",
+  const upstreamController = new AbortController();
+  let consumerCancelled = false;
+  const abortUpstream = () => upstreamController.abort();
+  request.signal.addEventListener("abort", abortUpstream, { once: true });
+
+  const body = new ReadableStream<Uint8Array>({
+    async start(controller) {
+      const encoder = new TextEncoder();
+      let accumulated = "";
+      let lastCheckpoint = Date.now();
+      const send = <TEvent extends ChatStreamEventName>(
+        event: TEvent,
+        data: ChatStreamEvents[TEvent],
+      ) => {
+        if (consumerCancelled) return;
+        controller.enqueue(encoder.encode(encodeSseEvent(event, data)));
+      };
+
+      send("start", {
+        userMessageId: turn.userMessageId,
+        assistantMessageId: turn.assistantMessageId,
+        requestId: input.requestId,
+      });
+
+      try {
+        const transcript = await loadModelTranscript(userId, input.threadId);
+        if (!transcript) throw new Error("Thread not found");
+
+        for await (const rawDelta of streamChat(
+          transcript,
+          CHAT_SYSTEM_PROMPT,
+          upstreamController.signal,
+        )) {
+          const delta = fixStreamingMarkdownBoundary(accumulated, rawDelta);
+          accumulated += delta;
+          send("delta", { delta });
+
+          if (Date.now() - lastCheckpoint >= 750) {
+            await checkpointAssistant(
+              userId,
+              turn.assistantMessageId,
+              accumulated,
+            );
+            lastCheckpoint = Date.now();
+          }
+        }
+
+        const finalContent = fixInlineMarkdown(accumulated);
+        if (!finalContent.trim()) throw new Error("Provider returned an empty response");
+        await finishAssistant(userId, turn.assistantMessageId, {
+          content: finalContent,
+          status: "complete",
+        });
+        send("done", {
+          assistantMessageId: turn.assistantMessageId,
+          status: "complete",
+        });
+      } catch (error) {
+        const cancelled = consumerCancelled || upstreamController.signal.aborted;
+        await finishAssistant(userId, turn.assistantMessageId, {
+          content: fixInlineMarkdown(accumulated),
+          status: cancelled ? "cancelled" : "failed",
+          errorCode: cancelled ? "cancelled" : "provider_error",
+          errorDetail: error instanceof Error ? error.message : "Unknown provider error",
+        });
+        if (!cancelled) {
+          send("error", {
+            message: "Stitch Talk could not finish that response. Please try again.",
+            retryable: true,
+          });
+        }
+      } finally {
+        request.signal.removeEventListener("abort", abortUpstream);
+        if (!consumerCancelled) controller.close();
+      }
+    },
+    cancel() {
+      consumerCancelled = true;
+      upstreamController.abort();
     },
   });
+
+  return new Response(body, { headers: streamHeaders() });
+}
+
+function replayCompletedTurn(assistantMessageId: string, content: string) {
+  const encoder = new TextEncoder();
+  return new Response(
+    new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(
+          encoder.encode(encodeSseEvent("start", { assistantMessageId, replay: true })),
+        );
+        if (content) {
+          controller.enqueue(encoder.encode(encodeSseEvent("delta", { delta: content })));
+        }
+        controller.enqueue(
+          encoder.encode(encodeSseEvent("done", { assistantMessageId, status: "complete" })),
+        );
+        controller.close();
+      },
+    }),
+    { headers: streamHeaders() },
+  );
+}
+
+function streamHeaders() {
+  return {
+    "content-type": "text/event-stream; charset=utf-8",
+    "cache-control": "no-cache, no-transform",
+    "x-accel-buffering": "no",
+    connection: "keep-alive",
+  };
 }
