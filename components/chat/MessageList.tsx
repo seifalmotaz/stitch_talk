@@ -2,11 +2,12 @@
 
 import { useEffect, useRef, useState } from "react";
 
-import type { ChatMessage } from "@/types/chat";
+import type { BriefCardData, ChatMessage } from "@/types/chat";
 import { MessageBubble } from "./MessageBubble";
 
 interface MessageListProps {
   messages: ChatMessage[];
+  onOpenBrief: (brief: BriefCardData) => void;
 }
 
 /**
@@ -19,7 +20,7 @@ const FOLLOW_THRESHOLD_PX = 150;
  * Scrollable message history with follow-the-thread auto-scroll.
  * Instant scrollTop updates (not smooth) so streaming stays snappy.
  */
-export function MessageList({ messages }: MessageListProps) {
+export function MessageList({ messages, onOpenBrief }: MessageListProps) {
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const [isFollowing, setIsFollowing] = useState(true);
@@ -66,7 +67,11 @@ export function MessageList({ messages }: MessageListProps) {
     >
       <div className="atelier-messages-inner">
         {messages.map((m) => (
-          <MessageBubble key={m.id} message={m} />
+          <MessageBubble
+            key={m.id}
+            message={m}
+            onOpenBrief={onOpenBrief}
+          />
         ))}
         <div ref={bottomRef} />
       </div>

@@ -24,6 +24,20 @@ export interface ChatImage {
   name?: string;
 }
 
+/**
+ * Lightweight brief payload that hangs off an assistant message as a card.
+ * Kept separate from the full `Brief` DAL shape so the chat UI doesn't drag
+ * extra columns (source ordinals, raw model name, updatedAt) into every
+ * render.
+ */
+export interface BriefCardData {
+  id: string;
+  version: number;
+  prompt: string;
+  gaps: string[];
+  createdAt: string;
+}
+
 export interface ChatMessage {
   id: string;
   role: Role;
@@ -42,6 +56,13 @@ export interface ChatMessage {
   streaming?: boolean;
   /** Set when a message failed to stream — UI shows an inline error state. */
   error?: boolean;
+  /**
+   * Brief versions saved during this assistant turn. Appended to in order as
+   * `brief_created` SSE events arrive. Today the chat model emits at most
+   * one brief tool call per turn — the array shape is forward-compatible with
+   * multi-call flows.
+   */
+  briefs?: BriefCardData[];
 }
 
 /**

@@ -192,6 +192,13 @@ export const briefs = pgTable(
       .references(() => users.id, { onDelete: "cascade" }),
     prompt: text("prompt").notNull(),
     gaps: text("gaps").array().default(sql`'{}'::text[]`).notNull(),
+    /**
+     * Per-thread monotonic version number (1, 2, 3, …). Backfilled on
+     * migration; new rows pick MAX(version)+1 within the thread in a single
+     * INSERT race-free by way of `recordBriefFromChat` taking a row lock on
+     * the thread.
+     */
+    version: integer("version").notNull().default(0),
     sourceThroughOrdinal: integer("source_through_ordinal").notNull(),
     model: text("model"),
     createdAt: timestamp("created_at", { withTimezone: true })
@@ -205,6 +212,14 @@ export const briefs = pgTable(
     index("briefs_thread_created_idx").on(
       table.threadId,
       table.createdAt.desc(),
+    ),
+    /**
+     * Two briefs within the same thread must never share a version. The UI
+     * shows this number ("Brief · v2") so collisions are user-visible.
+     */
+    uniqueIndex("briefs_thread_version_uidx").on(
+      table.threadId,
+      table.version,
     ),
   ],
 );

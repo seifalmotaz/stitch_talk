@@ -1,4 +1,26 @@
+/* ─── Global scrollbar hide ──────────────────────────────────────────────── */
+/* Custom scroll panes in this app (chat list, drawer, textarea) hide the
+   native scrollbar but keep scrolling functional. Falls back to a thin
+   track when content overflow is system-detected. */
+.atelier-messages,
+.drawer-pane,
+.brief-body,
+.atelier-messages-inner {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.atelier-messages::-webkit-scrollbar,
+.drawer-pane::-webkit-scrollbar,
+.brief-body::-webkit-scrollbar,
+.atelier-messages-inner::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
 @import "@clerk/ui/themes/shadcn.css";
+
+
 
 /* ═══════════════════════════════════════════════════════════════════════════
    Stitch Talk — Atelier design system
@@ -2373,5 +2395,252 @@ a.btn {
 
   .auth-card {
     padding: var(--space-5) var(--space-4);
+  }
+}
+
+/* ─── Brief card chip (inline, inside message-card) ──────────────────────── */
+
+.brief-card-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+  padding-top: var(--space-3);
+  border-top: 1px dashed var(--rule);
+}
+
+.brief-card {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.55rem 0.7rem 0.55rem 0.6rem;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--rule);
+  background: var(--paper-raised);
+  color: var(--ink-soft);
+  text-align: left;
+  cursor: pointer;
+  transition:
+    transform var(--dur) var(--ease-out),
+    border-color var(--dur) var(--ease-out),
+    background var(--dur) var(--ease-out);
+}
+
+.brief-card:hover,
+.brief-card:focus-visible {
+  border-color: color-mix(in srgb, var(--thread) 45%, var(--rule));
+  background: var(--thread-soft);
+  color: var(--ink);
+  transform: translateY(-1px);
+  outline: none;
+}
+
+.brief-card:focus-visible {
+  box-shadow: 0 0 0 3px var(--thread-soft);
+}
+
+.brief-card-icon {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  background: var(--paper-sunken);
+  color: var(--thread-deep);
+}
+
+.brief-card-icon svg {
+  width: 14px;
+  height: 14px;
+}
+
+.brief-card-meta {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.15;
+}
+
+.brief-card-title {
+  font-family: var(--font-ui);
+  font-size: 0.82rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--ink);
+}
+
+.brief-card-dot {
+  color: var(--thread);
+  margin: 0 0.1rem;
+}
+
+.brief-card-subtitle {
+  font-size: 0.72rem;
+  color: var(--ink-faint);
+  letter-spacing: 0.02em;
+}
+
+/* ─── Right-side brief drawer (split-pane, not overlay) ─────────────────── */
+
+.atelier-main--with-drawer {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) min(28rem, 40%);
+  gap: 0;
+}
+
+.atelier-chat {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.drawer-pane {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  background: var(--paper-raised);
+  border-left: 1px solid var(--rule);
+  padding: 1.35rem 1.35rem 1rem;
+  overflow: auto;
+  animation: drawer-in var(--dur-slow) var(--ease-out);
+  min-height: 0;
+}
+
+.drawer-pane::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  width: 4px;
+  background: repeating-linear-gradient(
+    180deg,
+    var(--thread) 0 10px,
+    transparent 10px 16px
+  );
+  opacity: 0.85;
+}
+
+.drawer-close {
+  position: absolute;
+  top: 0.85rem;
+  right: 0.85rem;
+}
+
+@keyframes drawer-in {
+  from {
+    opacity: 0;
+    transform: translateX(16px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.drawer-title {
+  margin: 0 0 0.3rem;
+  padding-right: 2rem;
+  font-family: var(--font-display);
+  font-size: 1.45rem;
+  font-weight: 600;
+  letter-spacing: -0.03em;
+  line-height: 1.2;
+  color: var(--ink);
+}
+
+.drawer-title-version {
+  color: var(--thread);
+}
+
+.drawer-stamp {
+  margin: 0 0 1.1rem;
+  font-size: 0.82rem;
+  line-height: 1.4;
+  color: var(--ink-faint);
+}
+
+.drawer-body {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+  min-height: 6rem;
+}
+
+.brief-body {
+  margin: 0;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  font-family: var(--font-read);
+  font-size: 0.95rem;
+  line-height: 1.55;
+  color: var(--ink);
+  padding: 0.85rem 0.95rem;
+  border-radius: var(--radius-md);
+  background: var(--paper);
+  border: 1px solid var(--rule);
+}
+
+.drawer-version-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  margin: 0 0 1.05rem;
+  padding: 0.25rem;
+  border-radius: var(--radius-md);
+  background: var(--paper-sunken);
+  border: 1px solid var(--rule);
+  width: fit-content;
+}
+
+.drawer-version-tab {
+  border: none;
+  background: transparent;
+  padding: 0.3rem 0.65rem;
+  border-radius: var(--radius-sm, 6px);
+  font-family: var(--font-ui);
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  color: var(--ink-faint);
+  cursor: pointer;
+  transition:
+    background var(--dur) var(--ease-out),
+    color var(--dur) var(--ease-out);
+}
+
+.drawer-version-tab:hover {
+  color: var(--ink);
+  background: color-mix(in srgb, var(--thread) 8%, transparent);
+}
+
+.drawer-version-tab--active {
+  background: var(--paper-raised);
+  color: var(--thread-deep);
+  box-shadow: 0 1px 0 var(--rule);
+}
+
+.drawer-version-tab:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--thread-soft);
+}
+
+.drawer-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  margin-top: 1.1rem;
+  padding-top: 1rem;
+  border-top: 1px dashed var(--rule-strong);
+}
+
+@media (max-width: 720px) {
+  .atelier-main--with-drawer {
+    grid-template-columns: 1fr;
+  }
+  .drawer-pane {
+    border-left: none;
+    border-top: 1px solid var(--rule);
   }
 }

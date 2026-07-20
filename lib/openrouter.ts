@@ -143,6 +143,133 @@ export async function* streamChat(
 }
 
 /**
+ * A single chunk the chat may emit. Either a piece of the assistant's reply
+ * text, OR a completed tool call (only yielded once OpenRouter has finished
+ * streaming all of the tool call's deltas — name, arguments, id).
+ */
+export type ChatToolChunk =
+  | { type: "delta"; text: string }
+  | {
+      type: "tool_call";
+      /** OpenRouter-provided id (e.g. "call_abc123"). Echoed in logs. */
+      id: string;
+      name: string;
+      /** Raw JSON-encoded arguments string. Empty string when the tool takes none. */
+      arguments: string;
+    };
+
+/**
+ * Tool descriptor passed to OpenRouter. Keep the schema minimal — today we
+ * only have one tool and it takes no arguments.
+ */
+export type ChatToolDefinition = {
+  name: string;
+  description: string;
+  parameters: Record<string, unknown>;
+};
+
+/**
+ * Stream a chat completion with native tool calling enabled. Yields text
+ * deltas as they arrive, then yields each completed tool call at end of
+ * stream.
+ *
+ * Why not yield tool calls as they stream? OpenRouter sends tool calls in
+ * piecemeal chunks (id in one, name in the next, arguments piecemeal). We
+ * only know a tool call is "complete" once the model stops adding pieces to
+ * it — which is end-of-stream in practice. The chat route treats tool calls
+ * as a post-stream side effect: it runs the brief-generation DAL, persists,
+ * and emits a `brief_created` SSE event before closing.
+ *
+ * Text deltas arriving on the same turn as a tool call are still streamed
+ * straight through — the model will usually write a one-line status line
+ * ("Saved brief v1") alongside the tool call, and we don't want to suppress
+ * that.
+ */
+export async function* streamChatWithTools(
+  messages: WireMessage[],
+  systemPrompt: string,
+  tools: ChatToolDefinition[],
+  signal?: AbortSignal,
+): AsyncGenerator<ChatToolChunk, void, void> {
+  const client = getClient();
+  const model = getModel();
+
+  // The SDK's ChatRequest type expects a snake_case `parallel_tool_calls`
+  // field at the wire level — we don't set it; the default behavior is fine
+  // for our single-tool case.
+  const stream = await client.chat.send(
+    {
+      chatRequest: {
+        model,
+        stream: true,
+        // See streamChat for the cast rationale on messages.
+        messages: toChatMessages(messages, systemPrompt) as never,
+        tools: tools.map((tool) => ({
+          type: "function" as const,
+          function: {
+            name: tool.name,
+            description: tool.description,
+            parameters: tool.parameters,
+          },
+        })),
+        reasoning: {
+          effort: "high",
+        },
+      },
+    },
+    { signal },
+  );
+
+  const eventStream = stream as unknown as AsyncIterable<ChatStreamChunk>;
+  // OpenRouter sends tool-call deltas in pieces keyed by `index` (a single
+  // assistant turn can make multiple parallel tool calls). We stitch them
+  // back together here.
+  const toolCalls = new Map<
+    number,
+    { id?: string; name?: string; type?: string; arguments: string }
+  >();
+
+  for await (const chunk of eventStream) {
+    const delta = chunk.choices?.[0]?.delta;
+    if (!delta) continue;
+
+    if (delta.content) {
+      yield { type: "delta", text: delta.content };
+    }
+
+    if (delta.toolCalls && delta.toolCalls.length > 0) {
+      for (const call of delta.toolCalls) {
+        const buffer = toolCalls.get(call.index) ?? {
+          id: undefined,
+          name: undefined,
+          arguments: "",
+        };
+        if (call.id) buffer.id = call.id;
+        if (call.type) buffer.type = call.type;
+        if (call.function?.name) buffer.name = call.function.name;
+        if (typeof call.function?.arguments === "string") {
+          buffer.arguments += call.function.arguments;
+        }
+        toolCalls.set(call.index, buffer);
+      }
+    }
+  }
+
+  // Flush any completed tool calls. A tool call is "completed" when we have
+  // both an id and a name; arguments may be empty (tools without parameters).
+  for (const buffer of toolCalls.values()) {
+    if (buffer.id && buffer.name) {
+      yield {
+        type: "tool_call",
+        id: buffer.id,
+        name: buffer.name,
+        arguments: buffer.arguments,
+      };
+    }
+  }
+}
+
+/**
  * Non-streaming single completion — used for the "Generate Brief" endpoint.
  *
  * Two modes:

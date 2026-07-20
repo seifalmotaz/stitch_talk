@@ -3,11 +3,13 @@
 import { memo } from "react";
 import { Streamdown } from "streamdown";
 
-import type { ChatImage, ChatMessage } from "@/types/chat";
+import type { BriefCardData, ChatImage, ChatMessage } from "@/types/chat";
+import { BriefCard } from "./BriefCard";
 import { GeneratingIndicator } from "./GeneratingIndicator";
 
 interface MessageBubbleProps {
   message: ChatMessage;
+  onOpenBrief: (brief: BriefCardData) => void;
 }
 
 /**
@@ -17,9 +19,10 @@ interface MessageBubbleProps {
  * User turns read as annotations / sticky notes pulled to the right.
  * A knot on the left spine marks each entry on the continuous stitch line.
  */
-function MessageBubbleImpl({ message }: MessageBubbleProps) {
+function MessageBubbleImpl({ message, onOpenBrief }: MessageBubbleProps) {
   const isUser = message.role === "user";
   const userImages = isUser ? (message.images ?? []) : [];
+  const briefs = !isUser ? (message.briefs ?? []) : [];
 
   return (
     <article
@@ -49,6 +52,18 @@ function MessageBubbleImpl({ message }: MessageBubbleProps) {
               content={message.content}
               streaming={!!message.streaming}
             />
+          )}
+
+          {briefs.length > 0 && (
+            <div className="brief-card-row" role="list" aria-label="Brief versions saved in this turn">
+              {briefs.map((brief) => (
+                <BriefCard
+                  key={brief.id}
+                  brief={brief}
+                  onOpen={onOpenBrief}
+                />
+              ))}
+            </div>
           )}
         </div>
       </div>

@@ -1,16 +1,16 @@
 "use client";
 
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { ArrowLeftIcon, PlusIcon, SquareIcon } from "lucide-react";
+import { ArrowLeftIcon, FileTextIcon, PlusIcon, SquareIcon } from "lucide-react";
 
 import { fixInlineMarkdown } from "@/lib/markdown-fix";
 import { useTRPCClient } from "@/lib/trpc/client";
-import type { ChatImage, ChatMessage } from "@/types/chat";
+import type { BriefCardData, ChatImage, ChatMessage } from "@/types/chat";
 import type { ChatStreamEvents } from "@/types/chat-stream";
 
-import { BriefDialog } from "./BriefDialog";
+import { BriefDrawer } from "./BriefDrawer";
 import { ChatInput } from "./ChatInput";
 import { EmptyState } from "./EmptyState";
 import { MessageList } from "./MessageList";
@@ -24,7 +24,16 @@ export type ChatShellProps = {
   initialMessages: ChatMessage[];
 };
 
-/** Persisted chat experience with optimistic streaming state. */
+/**
+ * Persisted chat experience with optimistic streaming state.
+ *
+ * Brief versions are produced inline by the chat model (it calls the
+ * `save_brief_version` tool whenever the user asks). The server emits a
+ * `brief_created` SSE event with the persisted payload, which we attach to
+ * the producing assistant message's `briefs[]` and surface as a clickable
+ * chip. The right-side drawer opens on chip click to show the full body,
+ * gaps, and a versions list for the thread.
+ */
 export function ChatShell({
   threadId,
   projectId,
@@ -36,23 +45,35 @@ export function ChatShell({
   const [messages, setMessages] = useState<ChatMessage[]>(initialMessages);
   const [isStreaming, setIsStreaming] = useState(false);
   const [streamError, setStreamError] = useState<string | null>(null);
-  const [briefOpen, setBriefOpen] = useState(false);
+  const [briefsForThread, setBriefsForThread] = useState<BriefCardData[]>([]);
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [activeBriefId, setActiveBriefId] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const requestIdRef = useRef<string | null>(null);
   const router = useRouter();
   const trpcClient = useTRPCClient();
-
-  const userTurnCount = useMemo(
-    () => messages.filter((message) => message.role === "user").length,
-    [messages],
-  );
-  const canGenerateBrief = userTurnCount >= 2 && !isStreaming;
 
   const reconcile = useCallback(async () => {
     const thread = await trpcClient.threads.byId.query({ threadId });
     setMessages(thread.messages);
     router.refresh();
   }, [router, threadId, trpcClient]);
+
+  /** Load every brief saved in this thread, newest first. Used by the
+   *  right-side drawer to render its versions list. New briefs arrive
+   *  during the chat session via `brief_created` SSE events and are pushed
+   *  into both the message's `briefs[]` array and this top-level list. */
+  const loadBriefs = useCallback(async () => {
+    const briefs = await trpcClient.briefs.list.query({ threadId });
+    setBriefsForThread(briefs);
+    return briefs;
+  }, [threadId, trpcClient]);
+
+  useEffect(() => {
+    void loadBriefs().catch((error) => {
+      console.error("[chat] could not load briefs for thread", error);
+    });
+  }, [loadBriefs]);
 
   const createNewThread = useCallback(async () => {
     if (isStreaming) return;
@@ -148,6 +169,24 @@ export function ChatShell({
               ),
             );
           },
+          onBriefCreated(payload) {
+            // Surface the new brief as an inline card on the producing
+            // assistant message, mirror it into the drawer's versions
+            // list, and open the drawer straight to the new version.
+            setMessages((current) =>
+              current.map((message) =>
+                message.id === assistantId
+                  ? {
+                      ...message,
+                      briefs: [...(message.briefs ?? []), payload.brief],
+                    }
+                  : message,
+              ),
+            );
+            setBriefsForThread((current) => upsertBrief(current, payload.brief));
+            setActiveBriefId(payload.brief.id);
+            setDrawerOpen(true);
+          },
           onError(message) {
             setStreamError(message);
           },
@@ -195,43 +234,68 @@ export function ChatShell({
     (text: string) => void handleSend(text, []),
     [handleSend],
   );
+
+  const openBrief = useCallback((brief: BriefCardData) => {
+    setActiveBriefId(brief.id);
+    setDrawerOpen(true);
+  }, []);
+  const closeDrawer = useCallback(() => setDrawerOpen(false), []);
+  const selectBrief = useCallback((id: string) => setActiveBriefId(id), []);
+
+  /** Open the drawer pinned to the most recent brief in this thread.
+   *  Used by the "View latest brief" header button — gives the user a way
+   *  back into the drawer after closing it. */
+  const openLatestBrief = useCallback(() => {
+    if (briefsForThread.length === 0) return;
+    setActiveBriefId(briefsForThread[0].id);
+    setDrawerOpen(true);
+  }, [briefsForThread]);
+
   const hasMessages = messages.length > 0;
+  // The Header keeps the Generate brief button removed — briefs are now
+  // produced by the AI when the user asks. The button was the legacy entry
+  // point and is gone; the Stop/New actions remain.
 
   return (
     <div className="atelier">
       <Header
-        canGenerateBrief={canGenerateBrief}
         onNewThread={() => void createNewThread()}
         onStop={stopStreaming}
-        onGenerateBrief={() => setBriefOpen(true)}
+        onOpenLatestBrief={openLatestBrief}
+        latestBriefVersion={briefsForThread[0]?.version ?? null}
         hasMessages={hasMessages}
         isStreaming={isStreaming}
+        drawerOpen={drawerOpen}
         projectName={projectName}
         chatTitle={chatTitle}
         backHref={backHref}
       />
 
-      <main className="atelier-main">
-        {streamError && (
-          <div role="alert" className="atelier-alert">
-            {streamError}
-          </div>
-        )}
-        {hasMessages ? (
-          <MessageList messages={messages} />
-        ) : (
-          <EmptyState onPick={handlePickStarter} />
+      <main className={`atelier-main${drawerOpen ? " atelier-main--with-drawer" : ""}`}>
+        <section className="atelier-chat" aria-label="Conversation">
+          {streamError && (
+            <div role="alert" className="atelier-alert">
+              {streamError}
+            </div>
+          )}
+          {hasMessages ? (
+            <MessageList messages={messages} onOpenBrief={openBrief} />
+          ) : (
+            <EmptyState onPick={handlePickStarter} />
+          )}
+
+          <ChatInput onSend={handleSend} disabled={isStreaming} />
+        </section>
+
+        {drawerOpen && (
+          <BriefDrawer
+            briefs={briefsForThread}
+            activeId={activeBriefId}
+            onClose={closeDrawer}
+            onSelect={selectBrief}
+          />
         )}
       </main>
-
-      <ChatInput onSend={handleSend} disabled={isStreaming} />
-
-      <BriefDialog
-        open={briefOpen}
-        onOpenChange={setBriefOpen}
-        onStartNew={() => void createNewThread()}
-        threadId={threadId}
-      />
     </div>
   );
 }
@@ -264,25 +328,39 @@ async function uploadImage(
   return prepared.attachmentId;
 }
 
+/** Insert or replace a brief by id, keeping newest-first ordering. */
+function upsertBrief(current: BriefCardData[], brief: BriefCardData): BriefCardData[] {
+  const filtered = current.filter((existing) => existing.id !== brief.id);
+  return [brief, ...filtered].sort((a, b) =>
+    a.version === b.version
+      ? 0
+      : a.version > b.version
+        ? -1
+        : 1,
+  );
+}
+
 interface HeaderProps {
-  canGenerateBrief: boolean;
   onNewThread: () => void;
   onStop: () => void;
-  onGenerateBrief: () => void;
+  onOpenLatestBrief: () => void;
+  latestBriefVersion: number | null;
   hasMessages: boolean;
   isStreaming: boolean;
+  drawerOpen: boolean;
   projectName: string;
   chatTitle: string;
   backHref: string;
 }
 
 function Header({
-  canGenerateBrief,
   onNewThread,
   onStop,
-  onGenerateBrief,
+  onOpenLatestBrief,
+  latestBriefVersion,
   hasMessages,
   isStreaming,
+  drawerOpen,
   projectName,
   chatTitle,
   backHref,
@@ -309,27 +387,27 @@ function Header({
             <span className="btn-label-hide-sm">Stop</span>
           </button>
         ) : (
-          hasMessages && (
-            <button type="button" className="btn btn-ghost" onClick={onNewThread}>
-              <PlusIcon />
-              <span className="btn-label-hide-sm">New thread</span>
-            </button>
-          )
+          <>
+            {hasMessages && (
+              <button type="button" className="btn btn-ghost" onClick={onNewThread}>
+                <PlusIcon />
+                <span className="btn-label-hide-sm">New thread</span>
+              </button>
+            )}
+            {latestBriefVersion !== null && !drawerOpen && (
+              <button
+                type="button"
+                className="btn btn-ghost"
+                onClick={onOpenLatestBrief}
+                aria-label={`Open latest brief, version ${latestBriefVersion}`}
+                title="Reopen the most recent brief"
+              >
+                <FileTextIcon />
+                <span className="btn-label-hide-sm">View brief</span>
+              </button>
+            )}
+          </>
         )}
-        <button
-          type="button"
-          className="btn btn-thread"
-          onClick={onGenerateBrief}
-          disabled={!canGenerateBrief}
-          aria-label="Generate design brief"
-          title={
-            canGenerateBrief
-              ? "Generate the design brief from this conversation"
-              : "Have a few exchanges first"
-          }
-        >
-          Generate brief
-        </button>
       </div>
     </header>
   );
@@ -340,6 +418,7 @@ async function consumeSseStream(
   handlers: {
     onStart: (payload: ChatStreamEvents["start"]) => void;
     onDelta: (delta: string) => void;
+    onBriefCreated: (payload: ChatStreamEvents["brief_created"]) => void;
     onError: (message: string) => void;
   },
 ) {
@@ -377,6 +456,9 @@ async function consumeSseStream(
       }
       if (event === "delta" && typeof payload.delta === "string") {
         handlers.onDelta(payload.delta);
+      }
+      if (event === "brief_created" && typeof payload.brief === "object") {
+        handlers.onBriefCreated(payload as unknown as ChatStreamEvents["brief_created"]);
       }
       if (event === "error") {
         handlers.onError(
