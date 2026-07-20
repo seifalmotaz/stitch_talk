@@ -29,10 +29,18 @@ function createClient(endpoint: string) {
 }
 
 const storageEndpoint = required("S3_ENDPOINT");
+const publicEndpoint = process.env.S3_PUBLIC_ENDPOINT;
 const storageClient = createClient(storageEndpoint);
-const browserClient = createClient(
-  process.env.S3_PUBLIC_ENDPOINT ?? storageEndpoint,
-);
+
+function toBrowserUrl(signedUrl: string) {
+  if (!publicEndpoint) return signedUrl;
+  const url = new URL(signedUrl);
+  const browserOrigin = new URL(publicEndpoint);
+  url.protocol = browserOrigin.protocol;
+  url.hostname = browserOrigin.hostname;
+  url.port = browserOrigin.port;
+  return url.toString();
+}
 
 const extensionByType: Record<AllowedImageType, string> = {
   "image/jpeg": "jpg",
@@ -59,7 +67,9 @@ export async function createUploadUrl(input: {
     ContentType: input.mimeType,
     ContentLength: input.byteSize,
   });
-  return getSignedUrl(browserClient, command, { expiresIn: 5 * 60 });
+  return toBrowserUrl(
+    await getSignedUrl(storageClient, command, { expiresIn: 5 * 60 }),
+  );
 }
 
 export async function inspectObject(storageKey: string) {
@@ -98,10 +108,12 @@ export async function getObjectAsDataUrl(
 }
 
 export async function createDownloadUrl(storageKey: string) {
-  return getSignedUrl(
-    browserClient,
-    new GetObjectCommand({ Bucket: bucket, Key: storageKey }),
-    { expiresIn: 15 * 60 },
+  return toBrowserUrl(
+    await getSignedUrl(
+      storageClient,
+      new GetObjectCommand({ Bucket: bucket, Key: storageKey }),
+      { expiresIn: 15 * 60 },
+    ),
   );
 }
 

@@ -7,6 +7,7 @@ import { relativeDate } from "@/server/dal/format";
 import { findOwnedProject, findOwnedThread } from "@/server/dal/ownership";
 import { reconcileStaleAssistant } from "@/server/dal/reconciliation";
 import { createDownloadUrl } from "@/server/storage";
+import type { ChatImage } from "@/types/chat";
 
 export type ThreadListDto = {
   id: string;
@@ -113,15 +114,11 @@ export async function getThread(userId: string, threadId: string) {
     })),
   );
 
-  const attachmentsByMessage = new Map<
-    string,
-    Array<Omit<(typeof attachmentsWithUrls)[number], "messageId">>
-  >();
+  const attachmentsByMessage = new Map<string, ChatImage[]>();
   for (const attachment of attachmentsWithUrls) {
     if (!attachment.messageId) continue;
     const list = attachmentsByMessage.get(attachment.messageId) ?? [];
     list.push({
-      id: attachment.id,
       dataUrl: attachment.dataUrl,
       mimeType: attachment.mimeType,
       size: attachment.size,
